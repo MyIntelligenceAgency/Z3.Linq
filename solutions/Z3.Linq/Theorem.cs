@@ -1,5 +1,5 @@
-﻿namespace Z3.Linq;
- 
+namespace Z3.Linq;
+
 using Microsoft.Z3;
 
 using System;
@@ -181,14 +181,14 @@ public class Theorem
 
     private Environment GetEnvironment(Context context, Type targetType)
     {
-        return GetEnvironment(context, targetType, targetType.Name);
+        return GetEnvironment(context, targetType, targetType.Name, false);
     }
 
-    private Environment GetEnvironment(Context context, Type targetType, string prefix)
+    private Environment GetEnvironment(Context context, Type targetType, string prefix, bool isArray)
     {
         var toReturn = new Environment();
 
-        if (targetType.IsArray || (targetType.IsGenericType && typeof(IEnumerable).IsAssignableFrom(targetType.GetGenericTypeDefinition())))
+        if (isArray || targetType.IsArray || (targetType.IsGenericType && typeof(IEnumerable).IsAssignableFrom(targetType.GetGenericTypeDefinition())))
         {
             Type? elType;
 
@@ -201,68 +201,89 @@ public class Theorem
                 elType = targetType.GetGenericArguments()[0];
             }
 
-            Sort arrDomain;
-            Sort arrRange;
-                
             switch (Type.GetTypeCode(elType))
             {
                 case TypeCode.String:
-                    arrDomain = context.StringSort;
-                    arrRange = context.MkBitVecSort(16);
-                    break;
                 case TypeCode.Int16:
-                    arrDomain = context.IntSort;
-                    arrRange = context.MkBitVecSort(16);
-                    break;
                 case TypeCode.Int32:
-                    arrDomain = context.IntSort;
-                    arrRange = context.IntSort;
-                    break;
                 case TypeCode.Int64:
                 case TypeCode.DateTime:
-                    arrDomain = context.IntSort;
-                    arrRange = context.MkBitVecSort(64);
-                    break;
                 case TypeCode.Boolean:
-                    arrDomain = context.BoolSort;
-                    arrRange = context.BoolSort;
-                    break;
                 case TypeCode.Single:
-                    arrDomain = context.RealSort;
-                    arrRange = context.MkFPSortSingle();
-                    break;
                 case TypeCode.Decimal:
-                    arrDomain = context.RealSort;
-                    arrRange = context.MkFPSortSingle();
-                    break;
                 case TypeCode.Double:
-                    arrDomain = context.RealSort;
-                    arrRange = context.MkFPSortDouble();
+                {
+                    // Simple scalar array: create Z3 array with appropriate sorts
+                    Sort arrDomain = GetArrayDomainSort(context, elType!);
+                    Sort arrRange = GetArrayRangeSort(context, elType!);
+                    toReturn.Expr = context.MkArrayConst(prefix, arrDomain, arrRange);
                     break;
+                }
                 case TypeCode.Object:
-                    toReturn.IsArray = true;
-
-                    foreach (PropertyInfo parameter in elType!.GetProperties(BindingFlags.Public | BindingFlags.Instance))
+                {
+                    // Nested array (e.g. int[][]) or collection of complex objects
+                    if (elType!.IsArray || (elType.IsGenericType && typeof(IEnumerable).IsAssignableFrom(elType.GetGenericTypeDefinition())))
                     {
-                        var newPrefix = parameter.Name;
-                            
-                        if (!string.IsNullOrEmpty(prefix))
+                        // Nested array: create an array whose range sort is the inner array sort.
+                        // Recursively compute the inner array environment to get its sort.
+                        var innerEnv = GetEnvironment(context, elType, prefix, true);
+                        toReturn.Expr = context.MkArrayConst(prefix, context.IntSort, ((ArrayExpr)innerEnv.Expr!).Sort);
+                        toReturn.IsArray = true;
+                        toReturn.Properties[typeof(Array)] = innerEnv;
+                    }
+                    else
+                    {
+                        // Collection of complex objects (e.g. List<MyObject>)
+                        toReturn.IsArray = true;
+
+                        foreach (PropertyInfo parameter in elType!.GetProperties(BindingFlags.Public | BindingFlags.Instance))
                         {
-                            newPrefix = $"{prefix}_{newPrefix}";
+                            var newPrefix = parameter.Name;
+
+                            if (!string.IsNullOrEmpty(prefix))
+                            {
+                                newPrefix = $"{prefix}_{newPrefix}";
+                            }
+
+                            toReturn.Properties[parameter] = GetEnvironment(context, parameter, newPrefix, true);
                         }
-                            
-                        toReturn.Properties[parameter] = GetEnvironment(context, parameter, newPrefix, true);
                     }
 
                     return toReturn;
+                }
                 default:
                     throw new NotSupportedException($"Unsupported member type {targetType.FullName}");
             }
-
-            toReturn.Expr = context.MkArrayConst(prefix, arrDomain, arrRange);
         }
         else
         {
+            // Scalar leaf type: create a Z3 constant
+            switch (Type.GetTypeCode(targetType))
+            {
+                case TypeCode.String:
+                    toReturn.Expr = context.MkConst(prefix, context.StringSort);
+                    return toReturn;
+                case TypeCode.Int16:
+                case TypeCode.Int32:
+                case TypeCode.Int64:
+                case TypeCode.DateTime:
+                    toReturn.Expr = context.MkIntConst(prefix);
+                    return toReturn;
+                case TypeCode.Boolean:
+                    toReturn.Expr = context.MkBoolConst(prefix);
+                    return toReturn;
+                case TypeCode.Single:
+                case TypeCode.Decimal:
+                case TypeCode.Double:
+                    toReturn.Expr = context.MkRealConst(prefix);
+                    return toReturn;
+                case TypeCode.Object:
+                    // Complex object: recurse into its properties/fields
+                    break;
+                default:
+                    throw new NotSupportedException($"Unsupported parameter type for {prefix} ({targetType.FullName}).");
+            }
+
             foreach (var parameter in targetType.GetProperties(BindingFlags.Public | BindingFlags.Instance))
             {
                 var newPrefix = parameter.Name;
@@ -291,8 +312,6 @@ public class Theorem
 
     private Environment GetEnvironment(Context context, MemberInfo parameter, string prefix, bool isArray)
     {
-        var toReturn = new Environment();
-
         var parameterType = parameter switch
         {
             PropertyInfo parameterProperty => parameterProperty.PropertyType,
@@ -303,94 +322,46 @@ public class Theorem
         TheoremVariableTypeMappingAttribute? parameterTypeMapping = parameterType.GetCustomAttributes<TheoremVariableTypeMappingAttribute>(false).SingleOrDefault();
 
         if (parameterTypeMapping != null)
-        { 
-            parameterType = parameterTypeMapping.RegularType; 
-        }
-
-        // Map the environment onto Z3-compatible types.
-        Expr constrExp;
-        if (!isArray)
         {
-            // To deal correctly with nested properties, we can't just use the property name.
-            // That breaks with ValueTuples with arity of 8 or higher because those have
-            // both x.Item1 and x.Rest.Item1, and if we call both of those "Item1" they become
-            // indistinguishable. Using the prefix means those become ValueTuple`8_Item1 and
-            // ValueTuple`8_Rest_Item1.
-            string name = prefix;
-            switch (Type.GetTypeCode(parameterType))
-            {
-                case TypeCode.String:
-                    constrExp = context.MkConst(name, context.StringSort);
-                    break;
-                case TypeCode.Int16:
-                case TypeCode.Int32:
-                case TypeCode.Int64:
-                case TypeCode.DateTime:
-                    constrExp = context.MkIntConst(name);
-                    break;
-                case TypeCode.Boolean:
-                    constrExp = context.MkBoolConst(name);
-                    break;
-                case TypeCode.Single:
-                case TypeCode.Decimal:
-                case TypeCode.Double:
-                    constrExp = context.MkRealConst(name);
-                    break;
-                case TypeCode.Object:
-                    return GetEnvironment(context, parameterType, prefix);
-                default:
-                    throw new NotSupportedException("Unsupported parameter type for " + name + ".");
-            }
+            parameterType = parameterTypeMapping.RegularType;
         }
-        else
+
+        // Delegate to the Type-based overload
+        return GetEnvironment(context, parameterType, prefix, isArray);
+    }
+
+    /// <summary>
+    /// Gets the Z3 domain sort for an array element type (used as the index sort).
+    /// </summary>
+    private static Sort GetArrayDomainSort(Context context, Type elementType)
+    {
+        // Arrays are indexed by integers in Z3
+        return context.IntSort;
+    }
+
+    /// <summary>
+    /// Gets the Z3 range sort for a scalar element type.
+    /// </summary>
+    private static Sort GetArrayRangeSort(Context context, Type elementType)
+    {
+        switch (Type.GetTypeCode(elementType))
         {
-            Sort arrDomain;
-            Sort arrRange;
-            switch (Type.GetTypeCode(parameterType))
-            {
-                case TypeCode.String:
-                    arrDomain = context.StringSort;
-                    arrRange = context.MkBitVecSort(16);
-                    break;
-                case TypeCode.Int16:
-                    arrDomain = context.IntSort;
-                    arrRange = context.MkBitVecSort(16);
-                    break;
-                case TypeCode.Int32:
-                    arrDomain = context.IntSort;
-                    arrRange = context.IntSort;
-                    break;
-                case TypeCode.Int64:
-                case TypeCode.DateTime:
-                    arrDomain = context.IntSort;
-                    arrRange = context.MkBitVecSort(64);
-                    break;
-                case TypeCode.Boolean:
-                    arrDomain = context.BoolSort;
-                    arrRange = context.BoolSort;
-                    break;
-                case TypeCode.Single:
-                    arrDomain = context.RealSort;
-                    arrRange = context.MkFPSortSingle();
-                    break;
-                case TypeCode.Decimal:
-                    arrDomain = context.RealSort;
-                    arrRange = context.MkFPSortSingle();
-                    break;
-                case TypeCode.Double:
-                    arrDomain = context.RealSort;
-                    arrRange = context.MkFPSortDouble();
-                    break;
-                default:
-                    throw new NotSupportedException($"Only one level of object collections is currently supported, 2 levels detected with prefix {prefix}");
-
-            }
-            constrExp = context.MkArrayConst(prefix, arrDomain, arrRange);
+            case TypeCode.String:
+                return context.StringSort;
+            case TypeCode.Int16:
+            case TypeCode.Int32:
+            case TypeCode.Int64:
+            case TypeCode.DateTime:
+                return context.IntSort;
+            case TypeCode.Boolean:
+                return context.BoolSort;
+            case TypeCode.Single:
+            case TypeCode.Decimal:
+            case TypeCode.Double:
+                return context.RealSort;
+            default:
+                throw new NotSupportedException($"Unsupported array element type {elementType.FullName}");
         }
-
-        toReturn.Expr = constrExp;
-
-        return toReturn;
     }
 
     private static object ConvertZ3Expression(object destinationObject, Context context, Model model, Environment subEnv, MemberInfo parameter)
@@ -418,80 +389,15 @@ public class Theorem
         {
             if (parameterType.IsArray || (parameterType.IsGenericType && typeof(IEnumerable).IsAssignableFrom(parameterType.GetGenericTypeDefinition())))
             {
-                Type eltType = parameterType.IsArray ? parameterType.GetElementType()! : parameterType.GetGenericArguments()[0];
-
-                if (eltType == null)
+                // Delegate to ExtractCollection for both simple and nested array extraction
+                object? existingMember = parameter switch
                 {
-                    throw new NotSupportedException("Unsupported untyped array parameter type for " + parameter.Name + ".");
-                }
-
-                var arrVal = (ArrayExpr)(subEnv.Expr ?? throw new ArgumentException(
-                    $"nameof(ConvertZ3Expression) requires {nameof(subEnv)}.{nameof(subEnv.Expr)} to be non-null",
-                    nameof(subEnv)));
-
-                var results = new ArrayList();
-
-                //todo: deal with length in a more robust way
-
-                int existingLength = parameter switch
-                {
-                    PropertyInfo info => ((ICollection)info.GetValue(destinationObject, null)!).Count,
-                    FieldInfo info1 => ((ICollection)info1).Count,
-                    _ => 0
+                    PropertyInfo info => info.GetValue(destinationObject, null),
+                    FieldInfo info1 => info1.GetValue(destinationObject),
+                    _ => null
                 };
 
-                for (int i = 0; i < existingLength; i++)
-                {
-                    var numValExpr = model.Eval(context.MkSelect(arrVal, context.MkInt(i)));
-
-                    object numVal;
-
-                    switch (Type.GetTypeCode(eltType))
-                    {
-                        case TypeCode.String:
-                            numVal = numValExpr.String;
-                            break;
-                        case TypeCode.Int16:
-                        case TypeCode.Int32:
-                            numVal = ((IntNum)numValExpr).Int;
-                            break;
-                        case TypeCode.Int64:
-                            numVal = ((IntNum)numValExpr).Int64;
-                            break;
-                        case TypeCode.DateTime:
-                            numVal = DateTime.FromFileTime(((IntNum)numValExpr).Int64);
-                            break;
-                        case TypeCode.Boolean:
-                            numVal = numValExpr.IsTrue;
-                            break;
-                        case TypeCode.Single:
-                            numVal = double.Parse(((RatNum)numValExpr).ToDecimalString(32), CultureInfo.InvariantCulture);
-                            break;
-                        case TypeCode.Decimal:
-                            Expr val = model.Eval((subEnv.Expr ?? throw new ArgumentException(
-                    $"nameof(ConvertZ3Expression) requires {nameof(subEnv)}.{nameof(subEnv.Expr)} to be non-null",
-                    nameof(subEnv))));
-                            string numValue = ((RatNum)val).ToDecimalString(128);
-
-                            ReadOnlySpan<char> numValueSpan = numValue.AsSpan();
-                            if (numValue.EndsWith('?'))
-                            {
-                                numValueSpan = numValueSpan[..^1];
-                            }
-
-                            numVal = decimal.Parse(numValueSpan, NumberStyles.Number, CultureInfo.InvariantCulture);
-                            break;
-                        case TypeCode.Double:
-                            numVal = double.Parse(((RatNum)numValExpr).ToDecimalString(64), CultureInfo.InvariantCulture);
-                            break;
-                        default:
-                            throw new NotSupportedException($"Unsupported array parameter type for {parameter.Name} and array element type {eltType.Name}.");
-                    }
-
-                    results.Add(numVal);
-                }
-
-                value = parameterType.IsArray ? results.ToArray(eltType) : Activator.CreateInstance(parameterType, results.ToArray(eltType))!;
+                value = ExtractCollection(existingMember, context, model, subEnv, parameter, parameterType);
             }
             else
             {
@@ -580,6 +486,121 @@ public class Theorem
     }
 
     /// <summary>
+    /// Extracts a collection (simple or nested array) from the Z3 model.
+    /// Handles both flat arrays (int[]) and nested arrays (int[][]) recursively.
+    /// </summary>
+    private static object ExtractCollection(object? existingMember, Context context, Model model, Environment subEnv, MemberInfo parameter, Type parameterType)
+    {
+        Type eltType = parameterType.IsArray ? parameterType.GetElementType()! : parameterType.GetGenericArguments()[0];
+
+        if (eltType == null)
+        {
+            throw new NotSupportedException("Unsupported untyped array parameter type for " + parameter.Name + ".");
+        }
+
+        var results = new ArrayList();
+
+        var arrVal = subEnv.Expr as ArrayExpr;
+
+        // Determine the collection length from the existing member
+        int length = 0;
+        if (existingMember != null)
+        {
+            var existingCollection = new ArrayList((ICollection)existingMember);
+            length = existingCollection.Count;
+        }
+
+        // Check if this is a nested array (e.g. int[][]) — stored in Properties[typeof(Array)]
+        Environment? innerArrayEnv = null;
+        bool isNestedArray = eltType.IsArray && subEnv.Properties.TryGetValue(typeof(Array), out innerArrayEnv);
+
+        for (int i = 0; i < length; i++)
+        {
+            object? elementVal = null;
+
+            if (arrVal != null)
+            {
+                // For nested arrays, Select(outer, i) yields the inner array (row i).
+                // For simple arrays, Select(arr, i) yields a scalar value.
+                Expr rowExpr = model.Eval(context.MkSelect(arrVal, context.MkInt(i)));
+
+                if (isNestedArray && innerArrayEnv != null)
+                {
+                    // rowExpr is (Array Int Int) for this row — build a temp environment
+                    // holding it and recurse to extract the inner scalar array.
+                    var rowEnv = new Environment { Expr = rowExpr };
+                    object? existingSubMember = null;
+
+                    if (existingMember is ICollection outerCollection)
+                    {
+                        var outerList = new ArrayList(outerCollection);
+                        if (i < outerList.Count)
+                        {
+                            existingSubMember = outerList[i];
+                        }
+                    }
+
+                    elementVal = ExtractCollection(existingSubMember, context, model, rowEnv, parameter, eltType);
+                }
+                else
+                {
+                    var numValExpr = rowExpr;
+
+                    switch (Type.GetTypeCode(eltType))
+                    {
+                        case TypeCode.String:
+                            elementVal = numValExpr.String;
+                            break;
+                        case TypeCode.Int16:
+                        case TypeCode.Int32:
+                            elementVal = ((IntNum)numValExpr).Int;
+                            break;
+                        case TypeCode.Int64:
+                            elementVal = ((IntNum)numValExpr).Int64;
+                            break;
+                        case TypeCode.DateTime:
+                            elementVal = DateTime.FromFileTime(((IntNum)numValExpr).Int64);
+                            break;
+                        case TypeCode.Boolean:
+                            elementVal = numValExpr.IsTrue;
+                            break;
+                        case TypeCode.Single:
+                            elementVal = double.Parse(((RatNum)numValExpr).ToDecimalString(32), CultureInfo.InvariantCulture);
+                            break;
+                        case TypeCode.Decimal:
+                        {
+                            Expr val = model.Eval(numValExpr);
+                            string numValue = ((RatNum)val).ToDecimalString(128);
+                            ReadOnlySpan<char> numValueSpan = numValue.AsSpan();
+                            if (numValue.EndsWith('?'))
+                            {
+                                numValueSpan = numValueSpan[..^1];
+                            }
+                            elementVal = decimal.Parse(numValueSpan, NumberStyles.Number, CultureInfo.InvariantCulture);
+                            break;
+                        }
+                        case TypeCode.Double:
+                            elementVal = double.Parse(((RatNum)numValExpr).ToDecimalString(64), CultureInfo.InvariantCulture);
+                            break;
+                        case TypeCode.Object:
+                            // Complex object element within a collection
+                            elementVal = GetSolution(eltType, context, model, subEnv);
+                            break;
+                        default:
+                            throw new NotSupportedException($"Unsupported array parameter type for {parameter.Name} and array element type {eltType.Name}.");
+                    }
+                }
+            }
+
+            results.Add(elementVal);
+        }
+
+        object value = parameterType.IsArray ? results.ToArray(eltType) : Activator.CreateInstance(parameterType, results.ToArray(eltType))!;
+
+        return value;
+    }
+
+    /// <summary>
     /// Gets the solution object for the solved theorem.
     /// </summary>
     /// <typeparam name="T">Environment type to create an instance of.</typeparam>
@@ -623,7 +644,7 @@ public class Theorem
                 // Mapping from property to field.
                 var field = fields.SingleOrDefault(f => f.Name.StartsWith($"<{parameter.Name}>"));
 
-                if (field == null) 
+                if (field == null)
                 {
                     continue;
                 }
@@ -641,8 +662,8 @@ public class Theorem
                     field.SetValue(result, ((IntNum)val).Int);
                 }
                 else
-                { 
-                    throw new NotSupportedException("Unsupported parameter type for " + parameter.Name + "."); 
+                {
+                    throw new NotSupportedException("Unsupported parameter type for " + parameter.Name + ".");
                 }
             }
 
@@ -659,7 +680,7 @@ public class Theorem
                 {
                     var prop = parameter as PropertyInfo;
 
-                    if (prop == null) 
+                    if (prop == null)
                     {
                         continue;
                     }

@@ -197,6 +197,32 @@ public static class Program
             Console.WriteLine(result);
         }
 
+        Console.WriteLine("====  SudokuGrid Example (int[][] nested array) ====");
+        Console.WriteLine();
+
+        using (var ctx = new Z3Context())
+        {
+            var theorem = SudokuGridTheorem.Create(ctx);
+
+            // Known cell hints (same puzzle as the first SudokuTheorem example)
+            theorem = theorem.Where(g => g.Cells[0][2] == 2 && g.Cells[0][5] == 1 && g.Cells[0][7] == 6);
+            theorem = theorem.Where(g => g.Cells[1][2] == 7 && g.Cells[1][5] == 4);
+            theorem = theorem.Where(g => g.Cells[2][0] == 5 && g.Cells[2][6] == 9);
+            theorem = theorem.Where(g => g.Cells[3][1] == 1 && g.Cells[3][3] == 3);
+            theorem = theorem.Where(g => g.Cells[4][0] == 8 && g.Cells[4][4] == 5 && g.Cells[4][8] == 4);
+            theorem = theorem.Where(g => g.Cells[5][5] == 6 && g.Cells[5][7] == 2);
+            theorem = theorem.Where(g => g.Cells[6][2] == 6 && g.Cells[6][8] == 7);
+            theorem = theorem.Where(g => g.Cells[7][3] == 8 && g.Cells[7][6] == 3);
+            theorem = theorem.Where(g => g.Cells[8][1] == 4 && g.Cells[8][3] == 9 && g.Cells[8][6] == 2);
+
+            var sw = Stopwatch.StartNew();
+            var result = theorem.Solve();
+            sw.Stop();
+
+            Console.WriteLine(result);
+            Console.WriteLine($"Time to solution: {sw.Elapsed.TotalMilliseconds} ms");
+        }
+
         Console.WriteLine("====  Oil Purchase Problem. ====");
         Console.WriteLine();
 
