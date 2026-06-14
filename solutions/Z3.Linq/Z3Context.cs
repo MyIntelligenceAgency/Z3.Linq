@@ -34,6 +34,15 @@ public sealed class Z3Context : IDisposable
     public TextWriter? Log { get; set; }
 
     /// <summary>
+    /// Gets/sets how collection (array/IEnumerable) properties are modeled in Z3 for theorems created
+    /// by this context. Propagated to each <see cref="Theorem{T}"/> built via <see cref="NewTheorem{T}()"/>.
+    /// Default is <see cref="CollectionHandling.Array"/> to preserve existing behavior (incl. nested int[][]
+    /// support); set to <see cref="CollectionHandling.Constants"/> to model collections as one Z3 constant
+    /// per element (the classic endjin binding model, resurrected).
+    /// </summary>
+    public CollectionHandling DefaultCollectionHandling { get; set; } = CollectionHandling.Array;
+
+    /// <summary>
     /// Closes the native resources held by the Z3 theorem prover.
     /// </summary>
     public void Dispose()
@@ -48,7 +57,7 @@ public sealed class Z3Context : IDisposable
     /// <returns>New theorem object based on the given environment.</returns>
     public Theorem<T> NewTheorem<T>()
     {
-        return new Theorem<T>(this);
+        return new Theorem<T>(this) { DefaultCollectionHandling = this.DefaultCollectionHandling };
     }
 
     /// <summary>
@@ -68,7 +77,7 @@ public sealed class Z3Context : IDisposable
     /// <returns>New theorem object based on the given environment.</returns>
     public Theorem<T> NewTheorem<T>(T dummy)
     {
-        return new Theorem<T>(this);
+        return new Theorem<T>(this) { DefaultCollectionHandling = this.DefaultCollectionHandling };
     }
 
     /// <summary>
