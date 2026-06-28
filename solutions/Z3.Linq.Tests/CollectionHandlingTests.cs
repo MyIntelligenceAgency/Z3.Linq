@@ -139,4 +139,56 @@ public class CollectionHandlingTests
         Assert.Equal(7, solution.Values[1]);
         Assert.Equal(7, solution.Values[2]);
     }
+
+    /// <summary>
+    /// Regression: in Constants mode an index that the constraints never reference is not materialized
+    /// as a Z3 constant. Such a free index used to leak a null into the extracted result, and
+    /// ArrayList.ToArray(typeof(int)) then threw InvalidCastException
+    /// ("could not be cast down to the destination array type"). The free index must come back as
+    /// default(int) = 0, since an unconstrained cell admits any value.
+    /// </summary>
+    [Fact]
+    public void ConstantsMode_ValueTypeArray_WithInteriorIndexGap_DoesNotThrow()
+    {
+        using var ctx = new Z3Context { DefaultCollectionHandling = CollectionHandling.Constants };
+
+        // Values[0] and Values[2] are constrained; Values[1] is deliberately never referenced.
+        var theorem = ctx.NewTheorem<Triple>()
+            .Where(t => t.Values[0] == 1)
+            .Where(t => t.Values[2] == 3);
+
+        var solution = theorem.Solve();
+
+        Assert.NotNull(solution);
+        Assert.Equal(1, solution!.Values[0]);
+        Assert.Equal(3, solution.Values[2]);
+        Assert.Equal(0, solution.Values[1]); // unconstrained -> element-type default
+    }
+
+    /// <summary>
+    /// Boolean per-element constants in Constants mode: exercises MkBoolConst leaf creation and
+    /// IsTrue extraction. Flags[2] is left free, so it also covers the same value-type default-fill
+    /// path as the gap test above (bool[] previously threw InvalidCastException at extraction).
+    /// </summary>
+    public class BoolTriple
+    {
+        public bool[] Flags { get; set; } = new bool[3];
+    }
+
+    [Fact]
+    public void ConstantsMode_BoolArray_SolvesWithPerElementConstants()
+    {
+        using var ctx = new Z3Context { DefaultCollectionHandling = CollectionHandling.Constants };
+
+        var theorem = ctx.NewTheorem<BoolTriple>()
+            .Where(t => t.Flags[0])
+            .Where(t => !t.Flags[1]);
+
+        var solution = theorem.Solve();
+
+        Assert.NotNull(solution);
+        Assert.True(solution!.Flags[0]);
+        Assert.False(solution.Flags[1]);
+        Assert.False(solution.Flags[2]); // unconstrained -> default(bool) = false
+    }
 }

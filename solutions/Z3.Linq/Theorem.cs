@@ -612,6 +612,17 @@ public class Theorem
                 }
             }
 
+            // Constants mode does not materialize a Z3 constant for an index that the constraints never
+            // reference (e.g. V[2] left free while V[0] and V[1] are constrained, or any interior gap).
+            // Such an index is unconstrained, so any assignment satisfies the theorem; we materialize it
+            // as the element type's default. Without this, a null leaks into a value-type result array and
+            // ArrayList.ToArray(valueType) throws InvalidCastException ("could not be cast down to the
+            // destination array type") — observed for bool[] and for int[] with an interior index gap.
+            if (elementVal == null && eltType.IsValueType)
+            {
+                elementVal = Activator.CreateInstance(eltType);
+            }
+
             results.Add(elementVal);
         }
 
