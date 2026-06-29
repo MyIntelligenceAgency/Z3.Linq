@@ -51,6 +51,20 @@ public class Theorem<T> : Theorem, ISolveable<T>
     }
 
     /// <summary>
+    /// Solves the theorem and exposes a witness evaluator for arbitrary sub-expressions under the satisfying
+    /// model (witness generation, gap B5 of #4616). The <paramref name="inspect"/> callback runs only when the
+    /// theorem is satisfiable, while the Z3 model is still alive, and can read back the model value of any
+    /// sub-expression via <c>witness.Eval(t =&gt; ...)</c> — including expressions that are not directly a
+    /// member of the result type. The witness must not be captured beyond the callback.
+    /// </summary>
+    /// <param name="inspect">Callback receiving a witness evaluator; not invoked on UNSAT.</param>
+    /// <returns>Environment instance with theorem-satisfying values, or <c>default</c> if UNSAT.</returns>
+    public T? Solve(Action<ModelWitness<T>> inspect)
+    {
+        return base.Solve<T>(inspect);
+    }
+
+    /// <summary>
     /// Finds an optimal solution.
     /// </summary>
     /// <param name="direction">The optimization goal, i.e. whether to minimize or maximize the solution.</param>

@@ -118,8 +118,25 @@ public class Theorem
     /// <returns>Result of solving the theorem; default(T) if the theorem cannot be satisfied.</returns>
     protected T? Solve<T>()
     {
+        return Solve<T>(null);
+    }
+
+    /// <summary>
+    /// Solves the theorem and, if requested, invokes <paramref name="inspect"/> with a witness evaluator
+    /// while the Z3 model and context are still alive (gap B5 of #4616). The evaluator translates an arbitrary
+    /// sub-expression over the theorem environment and evaluates it under the satisfying model — exposing the
+    /// model that <c>Solve&lt;T&gt;()</c> otherwise computes then discards. The witness is valid only for the
+    /// duration of the callback (the Z3 context is disposed when this method returns).
+    /// </summary>
+    /// <typeparam name="T">Theorem environment type.</typeparam>
+    /// <param name="inspect">Optional callback receiving a witness evaluator; not invoked on UNSAT.</param>
+    /// <returns>Result of solving the theorem; default(T) if the theorem cannot be satisfied.</returns>
+    protected T? Solve<T>(Action<ModelWitness<T>>? inspect)
+    {
         using Context ctx = this.context.CreateContext();
         var environment = GetEnvironment(ctx, typeof(T));
+
+        Model? model;
 
         // Soft (weighted MaxSAT) constraints require an Optimize object: AssertSoft defines an implicit
         // minimize-total-violated-weight objective with no explicit Maximize/Minimize term. A plain Solver
@@ -127,31 +144,67 @@ public class Theorem
         if (softConstraints.Any())
         {
             Optimize softOptimizer = ctx.MkOptimize();
-
             AssertConstraints<T>(ctx, softOptimizer, environment);
-
-            if (softOptimizer.Check() != Status.SATISFIABLE)
-            {
-                return default;
-            }
-
-            return GetSolution<T>(ctx, softOptimizer.Model, environment);
+            model = softOptimizer.Check() == Status.SATISFIABLE ? softOptimizer.Model : null;
+        }
+        else
+        {
+            // Solver solver = context.MkSimpleSolver();
+            Solver solver = ctx.MkSolver();
+            AssertConstraints<T>(ctx, solver, environment);
+            model = solver.Check() == Status.SATISFIABLE ? solver.Model : null;
         }
 
-        // Solver solver = context.MkSimpleSolver();
-        Solver solver = ctx.MkSolver();
-
-        AssertConstraints<T>(ctx, solver, environment);
-
-        Status status = solver.Check();
-
-        if (status != Status.SATISFIABLE)
+        if (model == null)
         {
             return default;
         }
 
-        return GetSolution<T>(ctx, solver.Model, environment);
+        // Witness inspection (B5): hand the caller an evaluator over the live model before disposing the
+        // context, so it can read back the model value of any sub-expression (not just the bound result type).
+        inspect?.Invoke(new ModelWitness<T>(ctx, model, environment));
+
+        return GetSolution<T>(ctx, model, environment);
     }
+
+    /// <summary>
+    /// Evaluates arbitrary sub-expressions over the theorem environment under a satisfying Z3 model
+    /// (witness generation, B5 of #4616). Handed to the caller by <see cref="Solve{T}(Action{ModelWitness{T}})"/>
+    /// while the model and context are alive. Reuses the same <see cref="ExpressionVisitor"/> + scalar-conversion
+    /// pipeline that <see cref="Solve{T}()"/> uses for the result type, so a witness value agrees with the
+    /// corresponding member of the returned solution object.
+    /// </summary>
+    /// <typeparam name="T">Theorem environment type.</typeparam>
+    public sealed class ModelWitness<T>
+    {
+        private readonly Context context;
+        private readonly Model model;
+        private readonly Environment environment;
+
+        internal ModelWitness(Context context, Model model, Environment environment)
+        {
+            this.context = context;
+            this.model = model;
+            this.environment = environment;
+        }
+
+        /// <summary>
+        /// Translates <paramref name="expression"/> to a Z3 expression and evaluates it under the model.
+        /// </summary>
+        /// <typeparam name="TResult">Scalar result type (int/long/bool/double/decimal/string/DateTime).</typeparam>
+        /// <param name="expression">A sub-expression over the theorem environment, e.g. <c>t =&gt; t.X + t.Y</c>.</param>
+        /// <returns>The value of the sub-expression under the satisfying model.</returns>
+        public TResult Eval<TResult>(Expression<Func<T, TResult>> expression)
+        {
+            var body = PartialEvaluator.PartialEval(expression.Body, ExpressionInterpreter.Instance);
+            Expr handle = ExpressionVisitor.Visit(context, environment, body, expression.Parameters[0]);
+            Expr value = model.Eval(handle, true);
+            return (TResult)ConvertScalarExpr(value, typeof(TResult), context, model, environment, ResultMember)!;
+        }
+    }
+
+    // Placeholder MemberInfo for witness scalar conversion error messages (no real member is being extracted).
+    private static readonly MemberInfo ResultMember = typeof(Theorem).GetMethod(nameof(ToString))!;
 
     /// <summary>
     /// Solves the theorem using Z3.
