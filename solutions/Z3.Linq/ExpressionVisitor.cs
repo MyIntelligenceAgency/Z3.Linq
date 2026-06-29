@@ -46,15 +46,15 @@ public static class ExpressionVisitor
 
             case ExpressionType.Add:
             case ExpressionType.AddChecked:
-                return VisitBinary(context, environment, (BinaryExpression)expression, param, (ctx, a, b) => ctx.MkAdd((ArithExpr)a, (ArithExpr)b));
+                return VisitBinary(context, environment, (BinaryExpression)expression, param, MkAddDispatch);
 
             case ExpressionType.Subtract:
             case ExpressionType.SubtractChecked:
-                return VisitBinary(context, environment, (BinaryExpression)expression, param, (ctx, a, b) => ctx.MkSub((ArithExpr)a, (ArithExpr)b));
+                return VisitBinary(context, environment, (BinaryExpression)expression, param, MkSubDispatch);
 
             case ExpressionType.Multiply:
             case ExpressionType.MultiplyChecked:
-                return VisitBinary(context, environment, (BinaryExpression)expression, param, (ctx, a, b) => ctx.MkMul((ArithExpr)a, (ArithExpr)b));
+                return VisitBinary(context, environment, (BinaryExpression)expression, param, MkMulDispatch);
 
             case ExpressionType.Divide:
                 return VisitBinary(context, environment, (BinaryExpression)expression, param, (ctx, a, b) => ctx.MkDiv((ArithExpr)a, (ArithExpr)b));
@@ -63,22 +63,22 @@ public static class ExpressionVisitor
                 return VisitBinary(context, environment, (BinaryExpression)expression, param, (ctx, a, b) => ctx.MkRem((IntExpr)a, (IntExpr)b));
 
             case ExpressionType.LessThan:
-                return VisitBinary(context, environment, (BinaryExpression)expression, param, (ctx, a, b) => ctx.MkLt((ArithExpr)a, (ArithExpr)b));
+                return VisitBinary(context, environment, (BinaryExpression)expression, param, MkLtDispatch);
 
             case ExpressionType.LessThanOrEqual:
-                return VisitBinary(context, environment, (BinaryExpression)expression, param, (ctx, a, b) => ctx.MkLe((ArithExpr)a, (ArithExpr)b));
+                return VisitBinary(context, environment, (BinaryExpression)expression, param, MkLeDispatch);
 
             case ExpressionType.GreaterThan:
-                return VisitBinary(context, environment, (BinaryExpression)expression, param, (ctx, a, b) => ctx.MkGt((ArithExpr)a, (ArithExpr)b));
+                return VisitBinary(context, environment, (BinaryExpression)expression, param, MkGtDispatch);
 
             case ExpressionType.GreaterThanOrEqual:
-                return VisitBinary(context, environment, (BinaryExpression)expression, param, (ctx, a, b) => ctx.MkGe((ArithExpr)a, (ArithExpr)b));
+                return VisitBinary(context, environment, (BinaryExpression)expression, param, MkGeDispatch);
 
             case ExpressionType.Equal:
-                return VisitBinary(context, environment, (BinaryExpression)expression, param, (ctx, a, b) => ctx.MkEq(a, b));
+                return VisitBinary(context, environment, (BinaryExpression)expression, param, MkEqDispatch);
 
             case ExpressionType.NotEqual:
-                return VisitBinary(context, environment, (BinaryExpression)expression, param, (ctx, a, b) => ctx.MkNot(ctx.MkEq(a, b)));
+                return VisitBinary(context, environment, (BinaryExpression)expression, param, (ctx, a, b) => ctx.MkNot((BoolExpr)MkEqDispatch(ctx, a, b)));
 
             case ExpressionType.MemberAccess:
                 return VisitMember(context, environment, (MemberExpression)expression, param);
@@ -110,6 +110,94 @@ public static class ExpressionVisitor
             default:
                 throw new NotSupportedException("Unsupported expression node type encountered: " + expression.NodeType);
         }
+    }
+
+    // --- Bit-vector aware arithmetic/relational dispatch (B4, #4616) -----------------------------------
+    // When a bit-vector operand is present, route the binary node through the modular bit-vector operators
+    // (MkBVAdd/MkBVSub/MkBVMul) and the UNSIGNED bit-vector comparisons (MkBVULT/MkBVULE/MkBVUGT/MkBVUGE),
+    // coercing any integer-literal sibling to a matching-width bit-vector. Otherwise the original integer/real
+    // arithmetic path is preserved byte-for-byte, so non-bit-vector theorems are unaffected. See
+    // BitVecWidthAttribute for the semantics (modular wrap-around enables overflow predicates such as a+b < a).
+
+    private static bool IsBitVec(Expr a, Expr b) => a is BitVecExpr || b is BitVecExpr;
+
+    private static BitVecExpr CoerceBitVec(Context ctx, Expr e, uint width)
+    {
+        switch (e)
+        {
+            case BitVecExpr bv:
+                return bv;
+            case IntNum n:
+                // Integer literal (e.g. the 16 in `cell < 16`) lifted to a width-matched bit-vector constant.
+                return ctx.MkBV(n.Int64, width);
+            case IntExpr ie:
+                // A genuine integer expression mixed with a bit-vector: reinterpret its low `width` bits.
+                return ctx.MkInt2BV(width, ie);
+            default:
+                throw new NotSupportedException($"Cannot coerce expression of sort {e.Sort} to a {width}-bit bit-vector.");
+        }
+    }
+
+    private static (BitVecExpr Left, BitVecExpr Right) AsBitVecPair(Context ctx, Expr a, Expr b)
+    {
+        uint width = ((a as BitVecExpr) ?? (BitVecExpr)b).SortSize;
+        return (CoerceBitVec(ctx, a, width), CoerceBitVec(ctx, b, width));
+    }
+
+    private static Expr MkAddDispatch(Context ctx, Expr a, Expr b)
+    {
+        if (!IsBitVec(a, b)) return ctx.MkAdd((ArithExpr)a, (ArithExpr)b);
+        var (x, y) = AsBitVecPair(ctx, a, b);
+        return ctx.MkBVAdd(x, y);
+    }
+
+    private static Expr MkSubDispatch(Context ctx, Expr a, Expr b)
+    {
+        if (!IsBitVec(a, b)) return ctx.MkSub((ArithExpr)a, (ArithExpr)b);
+        var (x, y) = AsBitVecPair(ctx, a, b);
+        return ctx.MkBVSub(x, y);
+    }
+
+    private static Expr MkMulDispatch(Context ctx, Expr a, Expr b)
+    {
+        if (!IsBitVec(a, b)) return ctx.MkMul((ArithExpr)a, (ArithExpr)b);
+        var (x, y) = AsBitVecPair(ctx, a, b);
+        return ctx.MkBVMul(x, y);
+    }
+
+    private static Expr MkLtDispatch(Context ctx, Expr a, Expr b)
+    {
+        if (!IsBitVec(a, b)) return ctx.MkLt((ArithExpr)a, (ArithExpr)b);
+        var (x, y) = AsBitVecPair(ctx, a, b);
+        return ctx.MkBVULT(x, y);
+    }
+
+    private static Expr MkLeDispatch(Context ctx, Expr a, Expr b)
+    {
+        if (!IsBitVec(a, b)) return ctx.MkLe((ArithExpr)a, (ArithExpr)b);
+        var (x, y) = AsBitVecPair(ctx, a, b);
+        return ctx.MkBVULE(x, y);
+    }
+
+    private static Expr MkGtDispatch(Context ctx, Expr a, Expr b)
+    {
+        if (!IsBitVec(a, b)) return ctx.MkGt((ArithExpr)a, (ArithExpr)b);
+        var (x, y) = AsBitVecPair(ctx, a, b);
+        return ctx.MkBVUGT(x, y);
+    }
+
+    private static Expr MkGeDispatch(Context ctx, Expr a, Expr b)
+    {
+        if (!IsBitVec(a, b)) return ctx.MkGe((ArithExpr)a, (ArithExpr)b);
+        var (x, y) = AsBitVecPair(ctx, a, b);
+        return ctx.MkBVUGE(x, y);
+    }
+
+    private static Expr MkEqDispatch(Context ctx, Expr a, Expr b)
+    {
+        if (!IsBitVec(a, b)) return ctx.MkEq(a, b);
+        var (x, y) = AsBitVecPair(ctx, a, b);
+        return ctx.MkEq(x, y);
     }
 
     /// <summary>

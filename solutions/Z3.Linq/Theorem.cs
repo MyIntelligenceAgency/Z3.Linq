@@ -541,6 +541,16 @@ public class Theorem
             _ => throw new NotSupportedException(),
         };
 
+        // Bit-vector variables (B4, #4616) are an integral scalar leaf bound to a Z3 bit-vector constant of
+        // the declared width, rather than to a mathematical integer. Intercept here, before the type-based
+        // overload, since the CLR type is still int/long: the width lives on the member attribute, not the type.
+        BitVecWidthAttribute? bitVecWidth = parameter.GetCustomAttributes<BitVecWidthAttribute>(false).SingleOrDefault();
+
+        if (bitVecWidth != null && !isArray)
+        {
+            return new Environment { Expr = context.MkBVConst(prefix, bitVecWidth.Width) };
+        }
+
         TheoremVariableTypeMappingAttribute? parameterTypeMapping = parameterType.GetCustomAttributes<TheoremVariableTypeMappingAttribute>(false).SingleOrDefault();
 
         if (parameterTypeMapping != null)
@@ -641,10 +651,10 @@ public class Theorem
                     break;
                 case TypeCode.Int16:
                 case TypeCode.Int32:
-                    value = ((IntNum)val).Int;
+                    value = ReadIntegral(val, asInt64: false);
                     break;
                 case TypeCode.Int64:
-                    value = ((IntNum)val).Int64;
+                    value = ReadIntegral(val, asInt64: true);
                     break;
                 case TypeCode.DateTime:
                     value = DateTime.FromFileTime(((IntNum)val).Int64);
@@ -835,6 +845,24 @@ public class Theorem
     /// <param name="subEnv">Environment of the collection (used to recurse for complex-object elements).</param>
     /// <param name="parameter">Member being extracted (for error messages).</param>
     /// <returns>CLR scalar value.</returns>
+    /// <summary>
+    /// Reads an integral model value back into a CLR <see cref="int"/>/<see cref="long"/>. Handles both the
+    /// integer theory (<see cref="IntNum"/>) and the bit-vector theory (<see cref="BitVecNum"/>, B4 #4616):
+    /// a bit-vector variable surfaces as a <see cref="BitVecNum"/>, which is not an <see cref="IntNum"/>, so the
+    /// plain <c>(IntNum)</c> cast would throw. Bit-vector values are read unsigned (the declared width bounds
+    /// the magnitude).
+    /// </summary>
+    private static object ReadIntegral(Expr val, bool asInt64)
+    {
+        if (val is BitVecNum bitVec)
+        {
+            return asInt64 ? (object)(long)bitVec.UInt64 : (int)bitVec.UInt64;
+        }
+
+        var intNum = (IntNum)val;
+        return asInt64 ? (object)intNum.Int64 : intNum.Int;
+    }
+
     private static object? ConvertScalarExpr(Expr numValExpr, Type eltType, Context context, Model model, Environment subEnv, MemberInfo parameter)
     {
         switch (Type.GetTypeCode(eltType))
@@ -843,9 +871,9 @@ public class Theorem
                 return numValExpr.String;
             case TypeCode.Int16:
             case TypeCode.Int32:
-                return ((IntNum)numValExpr).Int;
+                return ReadIntegral(numValExpr, asInt64: false);
             case TypeCode.Int64:
-                return ((IntNum)numValExpr).Int64;
+                return ReadIntegral(numValExpr, asInt64: true);
             case TypeCode.DateTime:
                 return DateTime.FromFileTime(((IntNum)numValExpr).Int64);
             case TypeCode.Boolean:
