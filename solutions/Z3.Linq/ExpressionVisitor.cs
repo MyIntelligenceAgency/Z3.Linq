@@ -172,31 +172,49 @@ public static class ExpressionVisitor
         // Constants mode: try to resolve the array environment WITHOUT going through Visit (which would lose the
         // MultipleEnvironment, since Visit only returns an Expr). For nested arrays the Left operand is itself an
         // ArrayIndex, so we recurse one level down through TryResolveArrayEnvironment.
-        if (TryResolveArrayEnvironment(context, environment, expression, param, out var arrayEnv) && arrayEnv is MultipleEnvironment multiEnv)
+        if (TryResolveArrayEnvironment(context, environment, expression, param, out var arrayEnv) && arrayEnv is MultipleEnvironment multiEnv
+            && TryResolveElementFromMultiEnv(context, multiEnv, expression.Right, out var element))
         {
-            var indexExpr = PartialEvaluator.PartialEval(expression.Right, ExpressionInterpreter.Instance);
-            if (indexExpr.NodeType == ExpressionType.Constant)
-            {
-                var index = ExpressionInterpreter.Instance.Interpret(indexExpr);
-
-                if (!multiEnv.SubEnvironments.TryGetValue(index!, out var subSubEnv))
-                {
-                    var newPrefix = $"{multiEnv.Prefix}_{index}";
-                    subSubEnv = ResolveElementEnvironment(context, multiEnv, newPrefix);
-                    multiEnv.SubEnvironments[index!] = subSubEnv;
-                }
-
-                // Scalar element: return its Z3 constant. Nested element (a row of int[][]): its Expr is null and
-                // the caller's own ArrayIndex will recurse here to resolve the next level.
-                if (subSubEnv.Expr != null)
-                {
-                    return subSubEnv.Expr;
-                }
-            }
+            return element;
         }
 
         // Array mode (default), or a symbolic index in Constants mode: array.Left is an ArrayExpr; Select yields the element.
         return context.MkSelect((ArrayExpr)Visit(context, environment, expression.Left, param), Visit(context, environment, expression.Right, param));
+    }
+
+    /// <summary>
+    /// Materializes (or retrieves) the Constants-mode Z3 constant for a single element of a
+    /// <see cref="MultipleEnvironment"/> at a compile-time-constant index. Shared by both the
+    /// <c>int[]</c> <see cref="ExpressionType.ArrayIndex"/> path (<see cref="VisitArrayIndex"/>) and the
+    /// <c>List&lt;T&gt;</c>/<c>IList&lt;T&gt;</c> indexer (<c>get_Item</c>) path in <see cref="VisitCall"/>.
+    /// Returns <c>false</c> for a symbolic (non-constant) index or when the resolved sub-environment is itself
+    /// a nested collection with no scalar <see cref="Environment.Expr"/> yet (the caller then falls back to Select).
+    /// </summary>
+    private static bool TryResolveElementFromMultiEnv(Context context, MultipleEnvironment multiEnv, Expression indexExpression, [NotNullWhen(true)] out Expr? result)
+    {
+        var indexExpr = PartialEvaluator.PartialEval(indexExpression, ExpressionInterpreter.Instance);
+        if (indexExpr.NodeType == ExpressionType.Constant)
+        {
+            var index = ExpressionInterpreter.Instance.Interpret(indexExpr);
+
+            if (!multiEnv.SubEnvironments.TryGetValue(index!, out var subSubEnv))
+            {
+                var newPrefix = $"{multiEnv.Prefix}_{index}";
+                subSubEnv = ResolveElementEnvironment(context, multiEnv, newPrefix);
+                multiEnv.SubEnvironments[index!] = subSubEnv;
+            }
+
+            // Scalar element: return its Z3 constant. Nested element (a row of int[][]): its Expr is null and
+            // the caller's own index will recurse to resolve the next level.
+            if (subSubEnv.Expr != null)
+            {
+                result = subSubEnv.Expr;
+                return true;
+            }
+        }
+
+        result = null;
+        return false;
     }
 
     /// <summary>
@@ -378,6 +396,22 @@ public static class ExpressionVisitor
 
             if (target != null)
             {
+                // Constants mode: a List<T>/IList<T> indexer (compiled to a get_Item call) on a theorem
+                // collection variable resolves to a per-element Z3 constant, exactly like an int[] ArrayIndex
+                // node. The environment of a generic collection member is a MultipleEnvironment in Constants
+                // mode (Theorem.GetEnvironment), so reuse the same lazy materialization. Without this, the
+                // indexer falls through to MakeIndex -> VisitIndex -> MkSelect, which assumes an ArrayExpr and
+                // throws a NullReferenceException in Constants mode. In Array mode the member environment is an
+                // ArrayExpr (not a MultipleEnvironment), so the guard fails and we fall through to Select below.
+                if (call.Arguments.Count == 1
+                    && target is MemberExpression collectionMember
+                    && GetMemberHierarchy(collectionMember)[0].Expression == param
+                    && ResolveMemberEnvironment(environment, collectionMember) is MultipleEnvironment multiEnv
+                    && TryResolveElementFromMultiEnv(context, multiEnv, call.Arguments[0], out var element))
+                {
+                    return element;
+                }
+
                 var args = call.Arguments;
                 var indexer = Expression.MakeIndex(target, propinfo, args);
 
