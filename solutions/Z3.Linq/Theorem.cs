@@ -663,7 +663,7 @@ public class Theorem
                     value = val.IsTrue;
                     break;
                 case TypeCode.Single:
-                    value = double.Parse(((RatNum)val).ToDecimalString(32), CultureInfo.InvariantCulture);
+                    value = ParseRatNumAsDouble((RatNum)val, 32);
                     break;
                 case TypeCode.Decimal:
 
@@ -678,7 +678,7 @@ public class Theorem
                     value = decimal.Parse(decValueSpan, NumberStyles.Number, CultureInfo.InvariantCulture);
                     break;
                 case TypeCode.Double:
-                    value = double.Parse(((RatNum)val).ToDecimalString(64), CultureInfo.InvariantCulture);
+                    value = ParseRatNumAsDouble((RatNum)val, 64);
                     break;
 
                 default:
@@ -863,6 +863,24 @@ public class Theorem
         return asInt64 ? (object)intNum.Int64 : intNum.Int;
     }
 
+    /// <summary>
+    /// Parses a Z3 rational's decimal rendering into a <see cref="double"/>. Z3's <c>ToDecimalString(n)</c>
+    /// appends a trailing <c>'?'</c> when the rational does not terminate within <paramref name="decimalDigits"/>
+    /// digits (e.g. <c>1/3</c> -> <c>"0.333...3?"</c>). Exact rationals (B7, #4616) make that case routine on
+    /// read-back, so the marker must be stripped before parsing (mirroring the existing decimal-typed path).
+    /// </summary>
+    private static double ParseRatNumAsDouble(RatNum ratNum, uint decimalDigits)
+    {
+        string decimalString = ratNum.ToDecimalString(decimalDigits);
+        ReadOnlySpan<char> span = decimalString.AsSpan();
+        if (decimalString.EndsWith('?'))
+        {
+            span = span[..^1];
+        }
+
+        return double.Parse(span, NumberStyles.Number, CultureInfo.InvariantCulture);
+    }
+
     private static object? ConvertScalarExpr(Expr numValExpr, Type eltType, Context context, Model model, Environment subEnv, MemberInfo parameter)
     {
         switch (Type.GetTypeCode(eltType))
@@ -879,7 +897,7 @@ public class Theorem
             case TypeCode.Boolean:
                 return numValExpr.IsTrue;
             case TypeCode.Single:
-                return double.Parse(((RatNum)numValExpr).ToDecimalString(32), CultureInfo.InvariantCulture);
+                return ParseRatNumAsDouble((RatNum)numValExpr, 32);
             case TypeCode.Decimal:
             {
                 Expr val = model.Eval(numValExpr);
@@ -892,7 +910,7 @@ public class Theorem
                 return decimal.Parse(numValueSpan, NumberStyles.Number, CultureInfo.InvariantCulture);
             }
             case TypeCode.Double:
-                return double.Parse(((RatNum)numValExpr).ToDecimalString(64), CultureInfo.InvariantCulture);
+                return ParseRatNumAsDouble((RatNum)numValExpr, 64);
             case TypeCode.Object:
                 // Complex object element within a collection
                 return GetSolution(eltType, context, model, subEnv);

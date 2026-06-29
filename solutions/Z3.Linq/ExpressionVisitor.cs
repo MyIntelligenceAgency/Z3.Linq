@@ -236,10 +236,41 @@ public static class ExpressionVisitor
 
         switch (Type.GetTypeCode(expression.Type))
         {
+            // Conversion to a real-family target (B7, #4616: matrix completed to Single/Decimal): lift an
+            // integer to a real (MkInt2Real); a value that is already real (e.g. an exact Rational, or a
+            // real member) passes through unchanged.
+            case TypeCode.Single:
             case TypeCode.Double:
-                return context.MkInt2Real((IntExpr)inner);
+            case TypeCode.Decimal:
+                if (inner is IntExpr intToReal)
+                {
+                    return context.MkInt2Real(intToReal);
+                }
+
+                if (inner is RealExpr alreadyReal)
+                {
+                    return alreadyReal;
+                }
+
+                break;
+
+            // Conversion to an integer-family target (B7: extended to Int16/Int64): truncate a real to an
+            // integer (MkReal2Int); a value that is already an integer passes through unchanged.
+            case TypeCode.Int16:
             case TypeCode.Int32:
-                return context.MkReal2Int((RealExpr)inner);
+            case TypeCode.Int64:
+                if (inner is RealExpr realToInt)
+                {
+                    return context.MkReal2Int(realToInt);
+                }
+
+                if (inner is IntExpr alreadyInt)
+                {
+                    return alreadyInt;
+                }
+
+                break;
+
             case TypeCode.Char:
                 if (inner.IsInt)
                 {
@@ -622,6 +653,15 @@ public static class ExpressionVisitor
 
     private static Expr VisitConstantValue(Context context, object val)
     {
+        // Exact rational constant (B7, #4616): emit the reduced num/den fraction directly, which Z3 parses as
+        // an exact rational. This is the precise path that a CLR double cannot offer for non-terminating
+        // rationals (1/3 would otherwise be stringified from a lossy double). Checked before the TypeCode
+        // switch since Rational is a struct (TypeCode.Object).
+        if (val is Rational rational)
+        {
+            return context.MkReal(rational.ToString());
+        }
+
         switch (Type.GetTypeCode(val.GetType()))
         {
             case TypeCode.Int16:
@@ -633,7 +673,10 @@ public static class ExpressionVisitor
             case TypeCode.Single:
             case TypeCode.Double:
             case TypeCode.Decimal:
-                return context.MkReal(val.ToString());
+                // Format invariantly: a CLR float/decimal under a non-English culture renders with a comma
+                // decimal separator (e.g. "0,333"), which Z3's MkReal(string) rejects as a parser error (B7,
+                // #4616 — the real-literal emission path). InvariantCulture guarantees a '.' separator.
+                return context.MkReal(Convert.ToString(val, System.Globalization.CultureInfo.InvariantCulture)!);
             case TypeCode.DateTime:
                 return context.MkInt(((DateTime)val).ToFileTimeUtc());
             case TypeCode.String:
