@@ -104,9 +104,30 @@ public static class ExpressionVisitor
             case ExpressionType.Power:
                 return VisitBinary(context, environment, (BinaryExpression)expression, param, (ctx, a, b) => ctx.MkPower((ArithExpr)a, (ArithExpr)b));
 
+            case ExpressionType.Conditional:
+                return VisitConditional(context, environment, (ConditionalExpression)expression, param);
+
             default:
                 throw new NotSupportedException("Unsupported expression node type encountered: " + expression.NodeType);
         }
+    }
+
+    /// <summary>
+    /// Translates a ternary conditional (<c>cond ? a : b</c>) into a Z3 <see cref="Context.MkIte"/>.
+    ///
+    /// This is the standard encoding for indicator variables and penalty terms:
+    /// <c>condition ? 1 : 0</c> becomes <c>(ite condition 1 0)</c>, which underlies MaxSAT-via-Optimize
+    /// soft penalties and the disjunction cross-link used by the hierarchical MealPlanner theorem.
+    /// Previously a <c>Conditional</c> node threw <see cref="NotSupportedException"/> (gap B2 of the
+    /// DSL backlog, #4616) — there was simply no case for it in the visitor switch.
+    /// </summary>
+    private static Expr VisitConditional(Context context, Environment environment, ConditionalExpression expression, ParameterExpression param)
+    {
+        var test = (BoolExpr)Visit(context, environment, expression.Test, param);
+        var ifTrue = Visit(context, environment, expression.IfTrue, param);
+        var ifFalse = Visit(context, environment, expression.IfFalse, param);
+
+        return context.MkITE(test, ifTrue, ifFalse);
     }
 
     private static Expr VisitConvert(Context context, Environment environment, UnaryExpression expression, ParameterExpression param)
