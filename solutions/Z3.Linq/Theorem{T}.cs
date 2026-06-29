@@ -65,6 +65,19 @@ public class Theorem<T> : Theorem, ISolveable<T>
     }
 
     /// <summary>
+    /// Diagnoses the theorem's satisfiability (gap B6 of #4616) without extracting a solution object. Returns
+    /// an <see cref="Explanation"/> that distinguishes satisfiable / unsatisfiable / unknown, and on UNSAT
+    /// reports the minimal <b>UNSAT core</b> — the subset of hard <c>.Where</c> constraints that are jointly
+    /// unsatisfiable. <see cref="Solve()"/> is unaffected: it still returns <c>default</c> for any non-SAT
+    /// outcome; <c>Explain()</c> is a parallel, non-breaking diagnostic surface.
+    /// </summary>
+    /// <returns>The satisfiability status and, on UNSAT, the conflicting constraints.</returns>
+    public Explanation Explain()
+    {
+        return base.Explain<T>();
+    }
+
+    /// <summary>
     /// Finds an optimal solution.
     /// </summary>
     /// <param name="direction">The optimization goal, i.e. whether to minimize or maximize the solution.</param>

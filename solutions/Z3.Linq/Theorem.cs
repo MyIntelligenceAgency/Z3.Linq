@@ -254,27 +254,7 @@ public class Theorem
     /// <typeparam name="T">Theorem environment type.</typeparam>
     private void AssertConstraints<T>(Context context, Z3Object approach, Environment environment)
     {
-        var constraintsToAssert = this.constraints;
-
-        // Global rewriter registered?
-        var rewriterAttr = typeof(T).GetCustomAttributes<TheoremGlobalRewriterAttribute>(false).SingleOrDefault();
-
-        if (rewriterAttr != null)
-        {
-            // Make sure the specified rewriter type implements the ITheoremGlobalRewriter.
-            var rewriterType = rewriterAttr.RewriterType;
-
-            if (!typeof(ITheoremGlobalRewriter).IsAssignableFrom(rewriterType))
-            {
-                throw new InvalidOperationException("Invalid global rewriter type definition. Did you implement ITheoremGlobalRewriter?");
-            }
-
-            // Assume a parameterless public constructor to new up the rewriter.
-            var rewriter = (ITheoremGlobalRewriter)Activator.CreateInstance(rewriterType)!;
-
-            // Do the rewrite.
-            constraintsToAssert = rewriter.Rewrite(constraintsToAssert);
-        }
+        var constraintsToAssert = GetConstraintsToAssert<T>();
 
         // Visit, assert and log.
         foreach (var constraint in constraintsToAssert)
@@ -317,6 +297,99 @@ public class Theorem
                 softOptimize.AssertSoft(softExpr, (uint)soft.Weight, soft.Group);
                 this.context.LogWriteLine($"[soft w={soft.Weight} g={soft.Group}] {softExpr}");
             }
+        }
+    }
+
+    /// <summary>
+    /// Resolves the hard constraints to assert, applying a registered <see cref="TheoremGlobalRewriterAttribute"/>
+    /// if present. Shared by <see cref="AssertConstraints{T}"/> (solve path) and <see cref="Explain{T}"/>
+    /// (diagnostic path, B6).
+    /// </summary>
+    private IEnumerable<LambdaExpression> GetConstraintsToAssert<T>()
+    {
+        // Global rewriter registered?
+        var rewriterAttr = typeof(T).GetCustomAttributes<TheoremGlobalRewriterAttribute>(false).SingleOrDefault();
+
+        if (rewriterAttr == null)
+        {
+            return this.constraints;
+        }
+
+        // Make sure the specified rewriter type implements the ITheoremGlobalRewriter.
+        var rewriterType = rewriterAttr.RewriterType;
+
+        if (!typeof(ITheoremGlobalRewriter).IsAssignableFrom(rewriterType))
+        {
+            throw new InvalidOperationException("Invalid global rewriter type definition. Did you implement ITheoremGlobalRewriter?");
+        }
+
+        // Assume a parameterless public constructor to new up the rewriter.
+        var rewriter = (ITheoremGlobalRewriter)Activator.CreateInstance(rewriterType)!;
+
+        // Do the rewrite.
+        return rewriter.Rewrite(this.constraints);
+    }
+
+    /// <summary>
+    /// Diagnoses the theorem's satisfiability without extracting a solution object (gap B6 of #4616). Unlike
+    /// <see cref="Solve{T}()"/> — which collapses every non-SAT outcome to <c>default</c> — this distinguishes
+    /// <see cref="SolveStatus.Satisfiable"/>, <see cref="SolveStatus.Unsatisfiable"/> and
+    /// <see cref="SolveStatus.Unknown"/>, and on UNSAT returns the minimal <b>UNSAT core</b>: the subset of the
+    /// hard <c>.Where</c> constraints (by their original 0-based index and source expression) that are jointly
+    /// unsatisfiable. Each constraint is asserted under a fresh tracking literal so Z3 can report which ones
+    /// participate in the conflict.
+    /// </summary>
+    /// <remarks>
+    /// Soft (MaxSAT) constraints are intentionally ignored here: they never cause UNSAT (they are sacrificed
+    /// instead), so the diagnostic concerns only the hard constraints. <see cref="Solve{T}()"/> is left
+    /// completely unchanged — B6 adds a parallel diagnostic surface rather than altering the solve contract.
+    /// </remarks>
+    /// <typeparam name="T">Theorem environment type.</typeparam>
+    /// <returns>An <see cref="Explanation"/> describing the status and, on UNSAT, the conflicting constraints.</returns>
+    protected Explanation Explain<T>()
+    {
+        using Context ctx = this.context.CreateContext();
+        var environment = GetEnvironment(ctx, typeof(T));
+
+        // UNSAT-core extraction needs assumption tracking on the solver.
+        Solver solver = ctx.MkSolver();
+
+        var constraintList = GetConstraintsToAssert<T>().ToList();
+        var trackerToConstraint = new Dictionary<string, ConstraintRef>(constraintList.Count);
+
+        for (int i = 0; i < constraintList.Count; i++)
+        {
+            var constraint = constraintList[i];
+            var body = PartialEvaluator.PartialEval(constraint.Body, ExpressionInterpreter.Instance);
+            BoolExpr expression = (BoolExpr)ExpressionVisitor.Visit(ctx, environment, body, constraint.Parameters[0]);
+
+            // A fresh boolean tracking literal per constraint: AssertAndTrack ties the constraint to it, so a
+            // returned UnsatCore lists exactly the trackers (hence constraints) that participate in the conflict.
+            string trackerName = $"__track_{i}";
+            BoolExpr tracker = ctx.MkBoolConst(trackerName);
+            trackerToConstraint[trackerName] = new ConstraintRef(i, constraint.Body.ToString());
+            solver.AssertAndTrack(expression, tracker);
+        }
+
+        Status status = solver.Check();
+
+        switch (status)
+        {
+            case Status.SATISFIABLE:
+                return new Explanation(SolveStatus.Satisfiable, Array.Empty<ConstraintRef>());
+
+            case Status.UNKNOWN:
+                return new Explanation(SolveStatus.Unknown, Array.Empty<ConstraintRef>());
+
+            default:
+                var core = solver.UnsatCore
+                    .Select(tracker => trackerToConstraint.TryGetValue(tracker.ToString(), out var cref) ? cref : (ConstraintRef?)null)
+                    .Where(cref => cref.HasValue)
+                    .Select(cref => cref!.Value)
+                    .OrderBy(cref => cref.Index)
+                    .ToArray();
+
+                return new Explanation(SolveStatus.Unsatisfiable, core);
         }
     }
 
