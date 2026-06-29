@@ -750,6 +750,18 @@ public class Theorem
 
             return result;
         }
+        else if (t.GetConstructor(Type.EmptyTypes) == null)
+        {
+            // Types initialized through a constructor rather than property setters --
+            // most notably positional records (record Point(int X, int Y)), which expose
+            // their positional parameters as public init-only properties but have NO public
+            // parameterless constructor, so the property-setter idiom in the branch below
+            // cannot be used. Instead we evaluate each constructor parameter from the model
+            // and invoke the (primary) constructor, mirroring how the anonymous-type branch
+            // above reconstructs through a constructor. (DSL backlog B9, #4616 -- lifts the
+            // limitation documented in Z3.Linq.Examples/RecordTheorem.cs.)
+            return ConstructFromModel(t, context, model, environment);
+        }
         else
         {
             // Straightforward case of having an "onymous type" at hand.
@@ -798,5 +810,53 @@ public class Theorem
 
             return result;
         }
+    }
+
+    /// <summary>
+    /// Reconstructs the solution for a type that is initialized through a constructor rather
+    /// than through property setters (positional records, and any immutable type whose only
+    /// constructor takes the bound members as parameters). Each constructor parameter is matched
+    /// by name to an environment-bound member, evaluated under the model, then passed positionally
+    /// to the constructor. (DSL backlog B9, #4616.)
+    /// </summary>
+    /// <param name="t">Environment type to instantiate.</param>
+    /// <param name="context">Z3 context.</param>
+    /// <param name="model">Z3 model to evaluate theorem parameters under.</param>
+    /// <param name="environment">Environment with bindings of theorem variables to Z3 handles.</param>
+    /// <returns>Instance of the environment type with theorem-satisfying values.</returns>
+    private static object ConstructFromModel(Type t, Context context, Model model, Environment environment)
+    {
+        // Index the bound members by name. Positional records expose their constructor
+        // parameters as public properties whose names match the constructor parameters exactly.
+        var membersByName = environment.Properties.Keys
+            .Where(k => k is PropertyInfo or FieldInfo)
+            .Cast<MemberInfo>()
+            .ToDictionary(m => m.Name, StringComparer.Ordinal);
+
+        // Pick the constructor whose parameters are all satisfiable from the environment
+        // (the record primary constructor); prefer the longest such constructor.
+        var ctor = t.GetConstructors()
+            .Where(c => c.GetParameters().Length > 0 &&
+                        c.GetParameters().All(p => p.Name != null && membersByName.ContainsKey(p.Name)))
+            .OrderByDescending(c => c.GetParameters().Length)
+            .FirstOrDefault()
+            ?? throw new NotSupportedException(
+                $"Type {t.Name} has no parameterless constructor and no constructor whose parameters " +
+                $"match the theorem environment members ({string.Join(", ", membersByName.Keys)}).");
+
+        var parameters = ctor.GetParameters();
+        var args = new object?[parameters.Length];
+        for (int i = 0; i < parameters.Length; i++)
+        {
+            var member = membersByName[parameters[i].Name!];
+            var subEnv = environment.Properties[member];
+
+            // ConvertZ3Expression only reads destinationObject for collection-valued members
+            // (to recover length); scalar and complex sub-object members do not need it, and a
+            // positional record being built has no pre-existing instance to read from.
+            args[i] = ConvertZ3Expression(null!, context, model, subEnv, member);
+        }
+
+        return Activator.CreateInstance(t, args)!;
     }
 }
