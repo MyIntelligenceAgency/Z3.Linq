@@ -511,6 +511,19 @@ public static class ExpressionVisitor
             return context.MkAdd(args.Cast<ArithExpr>().ToArray());
         }
 
+        // Bounded quantifiers (backlog B8, #4616): Z3Methods.ForAll / Z3Methods.Exists over a
+        // finite, host-evaluable domain are unrolled into an MkAnd / MkOr of the predicate applied
+        // to each domain element.
+        if (method.IsGenericMethod && method.GetGenericMethodDefinition() == typeof(Z3Methods).GetMethod(nameof(Z3Methods.ForAll)))
+        {
+            return VisitBoundedQuantifier(context, environment, call, param, isUniversal: true);
+        }
+
+        if (method.IsGenericMethod && method.GetGenericMethodDefinition() == typeof(Z3Methods).GetMethod(nameof(Z3Methods.Exists)))
+        {
+            return VisitBoundedQuantifier(context, environment, call, param, isUniversal: false);
+        }
+
         if (method.Name.StartsWith("get_"))
         {
             // Assuming it's an indexed property
@@ -544,6 +557,56 @@ public static class ExpressionVisitor
         }
 
         throw new NotSupportedException("Unknown method call:" + method.ToString());
+    }
+
+    /// <summary>
+    /// Translates a bounded quantifier (<see cref="Z3Methods.ForAll{T}"/> / <see cref="Z3Methods.Exists{T}"/>)
+    /// by unrolling over a finite domain. The domain (first argument) is evaluated in the host; the
+    /// predicate (second argument) is substituted with each domain element, partially evaluated, and
+    /// visited, then the per-element <see cref="BoolExpr"/>s are combined with <c>MkAnd</c> (universal)
+    /// or <c>MkOr</c> (existential). Backlog item B8 (#4616).
+    /// </summary>
+    private static Expr VisitBoundedQuantifier(Context context, Environment environment, MethodCallExpression call, ParameterExpression param, bool isUniversal)
+    {
+        // The domain is host-evaluable (it must not reference the theorem parameter); materialize it.
+        if (ExpressionInterpreter.Instance.Interpret(call.Arguments[0]) is not IEnumerable domain)
+        {
+            throw new NotSupportedException(
+                $"The domain of {(isUniversal ? nameof(Z3Methods.ForAll) : nameof(Z3Methods.Exists))} " +
+                "must be a finite, host-evaluable IEnumerable.");
+        }
+
+        // Unwrap a possible Quote around the predicate lambda.
+        Expression predicateArg = call.Arguments[1];
+        if (predicateArg is UnaryExpression { NodeType: ExpressionType.Quote } quoted)
+        {
+            predicateArg = quoted.Operand;
+        }
+
+        if (predicateArg is not LambdaExpression predicate)
+        {
+            throw new NotSupportedException(
+                $"The predicate of {(isUniversal ? nameof(Z3Methods.ForAll) : nameof(Z3Methods.Exists))} " +
+                "must be a lambda expression.");
+        }
+
+        var terms = new List<BoolExpr>();
+        foreach (var element in domain)
+        {
+            // Substitute the bound variable with the concrete element, fold the now host-evaluable
+            // parts (e.g. index arithmetic), then visit the residual that still references the theorem.
+            var substituted = ParameterSubstituter.SubstituteParameter(predicate, Expression.Constant(element, predicate.Parameters[0].Type));
+            var folded = PartialEvaluator.PartialEval(substituted, ExpressionInterpreter.Instance);
+            terms.Add((BoolExpr)Visit(context, environment, folded, param));
+        }
+
+        if (terms.Count == 0)
+        {
+            // Vacuous quantifier: forall over the empty domain is true, exists is false.
+            return isUniversal ? context.MkTrue() : context.MkFalse();
+        }
+
+        return isUniversal ? context.MkAnd(terms.ToArray()) : context.MkOr(terms.ToArray());
     }
 
     /// <summary>

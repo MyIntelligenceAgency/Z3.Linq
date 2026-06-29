@@ -1,6 +1,7 @@
 ﻿namespace Z3.Linq;
 
 using System;
+using System.Collections.Generic;
 
 /// <summary>
 /// Z3 predicate methods.
@@ -34,6 +35,46 @@ public static class Z3Methods
     /// expressions; same magic-method mechanism as <see cref="Distinct{T}"/>.
     /// </remarks>
     public static T Sum<T>(params T[] terms)
+    {
+        throw new NotSupportedException("This method should only be used in query expressions.");
+    }
+
+    /// <summary>
+    /// Bounded universal quantifier: the predicate must hold for every element of the
+    /// (finite, host-evaluable) domain. The visitor unrolls it into a conjunction
+    /// <c>MkAnd(predicate(d0), predicate(d1), ...)</c> — backlog item B8 (#4616).
+    /// An empty domain yields <c>true</c>.
+    /// </summary>
+    /// <typeparam name="T">Element type of the bound variable (e.g. <c>int</c> index).</typeparam>
+    /// <param name="domain">A finite domain known at translation time (e.g. <c>Enumerable.Range(0, n)</c>).</param>
+    /// <param name="predicate">Predicate over a domain element; it must reference the theorem parameter.</param>
+    /// <returns>Predicate return value.</returns>
+    /// <remarks>
+    /// This method should only be used within LINQ expressions. The <paramref name="domain"/> is
+    /// evaluated in the host; the <paramref name="predicate"/> is expanded over each element. This is
+    /// a bounded (finite-domain) quantifier, not a true SMT <c>forall</c> over an unbounded sort.
+    /// </remarks>
+    public static bool ForAll<T>(IEnumerable<T> domain, Func<T, bool> predicate)
+    {
+        throw new NotSupportedException("This method should only be used in query expressions.");
+    }
+
+    /// <summary>
+    /// Bounded existential quantifier: the predicate must hold for at least one element of the
+    /// (finite, host-evaluable) domain. The visitor unrolls it into a disjunction
+    /// <c>MkOr(predicate(d0), predicate(d1), ...)</c> — backlog item B8 (#4616).
+    /// An empty domain yields <c>false</c>.
+    /// </summary>
+    /// <typeparam name="T">Element type of the bound variable (e.g. <c>int</c> index).</typeparam>
+    /// <param name="domain">A finite domain known at translation time (e.g. <c>Enumerable.Range(0, n)</c>).</param>
+    /// <param name="predicate">Predicate over a domain element; it must reference the theorem parameter.</param>
+    /// <returns>Predicate return value.</returns>
+    /// <remarks>
+    /// This method should only be used within LINQ expressions. The <paramref name="domain"/> is
+    /// evaluated in the host; the <paramref name="predicate"/> is expanded over each element. This is
+    /// a bounded (finite-domain) quantifier, not a true SMT <c>exists</c> over an unbounded sort.
+    /// </remarks>
+    public static bool Exists<T>(IEnumerable<T> domain, Func<T, bool> predicate)
     {
         throw new NotSupportedException("This method should only be used in query expressions.");
     }
