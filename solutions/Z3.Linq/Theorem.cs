@@ -20,14 +20,30 @@ using System.Runtime.CompilerServices;
 public class Theorem
 {
     /// <summary>
-    /// Theorem constraints.
+    /// Theorem constraints (hard: must hold for a solution to exist).
     /// </summary>
     private readonly IEnumerable<LambdaExpression> constraints;
+
+    /// <summary>
+    /// Soft theorem constraints (weighted: each may be violated at the cost of its weight; the solver
+    /// minimizes the total weight of violated soft constraints — weighted MaxSAT, gap B1 of #4616).
+    /// </summary>
+    private readonly IEnumerable<SoftConstraint> softConstraints;
 
     /// <summary>
     /// Z3 context under which the theorem is solved.
     /// </summary>
     private readonly Z3Context context;
+
+    /// <summary>
+    /// A soft (weighted) constraint: a boolean predicate that the solver tries — but is not required — to
+    /// satisfy. Violating it costs <see cref="Weight"/>; the optimizer minimizes the sum of violated weights.
+    /// Constraints sharing a <see cref="Group"/> name are aggregated into one MaxSAT objective by Z3.
+    /// </summary>
+    /// <param name="Constraint">The boolean predicate lambda over the theorem environment.</param>
+    /// <param name="Weight">The penalty incurred when the constraint is left unsatisfied (must be &gt; 0).</param>
+    /// <param name="Group">The MaxSAT objective group the constraint belongs to.</param>
+    protected internal readonly record struct SoftConstraint(LambdaExpression Constraint, int Weight, string Group);
 
     /// <summary>
     /// Creates a new theorem for the given Z3 context.
@@ -42,17 +58,34 @@ public class Theorem
     /// Creates a new pre-constrained theorem for the given Z3 context.
     /// </summary>
     /// <param name="context">Z3 context.</param>
-    /// <param name="constraints">Constraints to apply to the created theorem.</param>
+    /// <param name="constraints">Hard constraints to apply to the created theorem.</param>
     protected Theorem(Z3Context context, IEnumerable<LambdaExpression> constraints)
+        : this(context, constraints, new List<SoftConstraint>())
     {
-        this.context = context;
-        this.constraints = constraints;
     }
 
     /// <summary>
-    /// Gets the constraints of the theorem.
+    /// Creates a new pre-constrained theorem (hard + soft) for the given Z3 context.
+    /// </summary>
+    /// <param name="context">Z3 context.</param>
+    /// <param name="constraints">Hard constraints to apply to the created theorem.</param>
+    /// <param name="softConstraints">Weighted soft constraints (MaxSAT) to apply to the created theorem.</param>
+    protected Theorem(Z3Context context, IEnumerable<LambdaExpression> constraints, IEnumerable<SoftConstraint> softConstraints)
+    {
+        this.context = context;
+        this.constraints = constraints;
+        this.softConstraints = softConstraints;
+    }
+
+    /// <summary>
+    /// Gets the hard constraints of the theorem.
     /// </summary>
     protected IEnumerable<LambdaExpression> Constraints => constraints;
+
+    /// <summary>
+    /// Gets the soft (weighted MaxSAT) constraints of the theorem.
+    /// </summary>
+    protected IEnumerable<SoftConstraint> SoftConstraints => softConstraints;
 
     /// <summary>
     /// Gets the Z3 context under which the theorem is solved.
@@ -87,6 +120,23 @@ public class Theorem
     {
         using Context ctx = this.context.CreateContext();
         var environment = GetEnvironment(ctx, typeof(T));
+
+        // Soft (weighted MaxSAT) constraints require an Optimize object: AssertSoft defines an implicit
+        // minimize-total-violated-weight objective with no explicit Maximize/Minimize term. A plain Solver
+        // cannot carry soft constraints, so route through the optimizer whenever any are present (B1, #4616).
+        if (softConstraints.Any())
+        {
+            Optimize softOptimizer = ctx.MkOptimize();
+
+            AssertConstraints<T>(ctx, softOptimizer, environment);
+
+            if (softOptimizer.Check() != Status.SATISFIABLE)
+            {
+                return default;
+            }
+
+            return GetSolution<T>(ctx, softOptimizer.Model, environment);
+        }
 
         // Solver solver = context.MkSimpleSolver();
         Solver solver = ctx.MkSolver();
@@ -198,6 +248,22 @@ public class Theorem
             }
 
             this.context.LogWriteLine(expression.ToString());
+        }
+
+        // Soft (weighted MaxSAT) constraints: only an Optimize object can carry them. Each is asserted
+        // with its weight and group, so Z3 minimizes the total weight of the soft constraints it leaves
+        // unsatisfied (B1, #4616). A plain Solver silently ignores them — but Solve<T>() routes through the
+        // optimizer whenever any soft constraint exists, so the Solver branch is only ever reached with none.
+        if (approach is Optimize softOptimize)
+        {
+            foreach (var soft in softConstraints)
+            {
+                var softBody = PartialEvaluator.PartialEval(soft.Constraint.Body, ExpressionInterpreter.Instance);
+                BoolExpr softExpr = (BoolExpr)ExpressionVisitor.Visit(context, environment, softBody, soft.Constraint.Parameters[0]);
+
+                softOptimize.AssertSoft(softExpr, (uint)soft.Weight, soft.Group);
+                this.context.LogWriteLine($"[soft w={soft.Weight} g={soft.Group}] {softExpr}");
+            }
         }
     }
 
