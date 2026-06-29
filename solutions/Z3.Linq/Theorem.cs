@@ -149,8 +149,9 @@ public class Theorem
         }
         else
         {
-            // Solver solver = context.MkSimpleSolver();
-            Solver solver = ctx.MkSolver();
+            // Solver selection is delegated to the context (SolverKind / Logic), backlog B10 (#4616).
+            // Previously hard-coded to ctx.MkSolver(); MkSimpleSolver() is now reachable via SolverKind.Simple.
+            Solver solver = this.context.CreateSolver(ctx);
             AssertConstraints<T>(ctx, solver, environment);
             model = solver.Check() == Status.SATISFIABLE ? solver.Model : null;
         }

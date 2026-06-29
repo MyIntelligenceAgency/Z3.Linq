@@ -34,6 +34,40 @@ public sealed class Z3Context : IDisposable
     public TextWriter? Log { get; set; }
 
     /// <summary>
+    /// Selects which Z3 solver is created when a theorem is solved by this context.
+    /// Default is <see cref="SolverKind.Default"/> (Z3's general-purpose combined solver,
+    /// <c>ctx.MkSolver()</c>), which preserves existing behavior.
+    /// </summary>
+    public SolverKind SolverKind { get; set; } = SolverKind.Default;
+
+    /// <summary>
+    /// The SMT-LIB logic name (e.g. <c>"QF_LIA"</c>, <c>"QF_BV"</c>, <c>"LIA"</c>) used when
+    /// <see cref="SolverKind"/> is <see cref="SolverKind.Logic"/>. A logic-specialized solver
+    /// can be markedly faster on a restricted fragment, at the cost of rejecting constraints
+    /// outside that fragment. Ignored for the other solver kinds.
+    /// </summary>
+    public string? Logic { get; set; }
+
+    /// <summary>
+    /// Sets a Z3 module/global parameter (e.g. <c>"timeout"</c>, <c>"random_seed"</c>,
+    /// <c>"unsat_core"</c>) applied when the underlying <see cref="Context"/> is created.
+    /// Returns this context to allow fluent chaining.
+    /// </summary>
+    /// <param name="name">Parameter name.</param>
+    /// <param name="value">Parameter value (Z3 parses booleans/integers from their string form).</param>
+    /// <returns>This context.</returns>
+    public Z3Context SetParameter(string name, string value)
+    {
+        if (string.IsNullOrEmpty(name))
+        {
+            throw new ArgumentException("Parameter name must be non-empty.", nameof(name));
+        }
+
+        this.config[name] = value ?? throw new ArgumentNullException(nameof(value));
+        return this;
+    }
+
+    /// <summary>
     /// Gets/sets how collection (array/IEnumerable) properties are modeled in Z3 for theorems created
     /// by this context. Propagated to each <see cref="Theorem{T}"/> built via <see cref="NewTheorem{T}()"/>.
     /// Default is <see cref="CollectionHandling.Array"/> to preserve existing behavior (incl. nested int[][]
@@ -87,6 +121,36 @@ public sealed class Z3Context : IDisposable
     internal Context CreateContext()
     {
         return new Context(config);
+    }
+
+    /// <summary>
+    /// Creates the Z3 solver for a theorem according to <see cref="SolverKind"/> and
+    /// <see cref="Logic"/>. Centralizes the solver-factory choice that was previously
+    /// hard-coded to <c>ctx.MkSolver()</c> in <see cref="Theorem"/>. (DSL backlog B10, #4616.)
+    /// </summary>
+    /// <param name="context">The native Z3 context the solver is created under.</param>
+    /// <returns>The configured solver.</returns>
+    internal Solver CreateSolver(Context context)
+    {
+        switch (SolverKind)
+        {
+            case SolverKind.Simple:
+                return context.MkSimpleSolver();
+
+            case SolverKind.Logic:
+                if (string.IsNullOrEmpty(Logic))
+                {
+                    throw new InvalidOperationException(
+                        $"{nameof(SolverKind)}.{nameof(SolverKind.Logic)} requires {nameof(Logic)} " +
+                        "to be set to an SMT-LIB logic name (e.g. \"QF_LIA\").");
+                }
+
+                return context.MkSolver(Logic);
+
+            case SolverKind.Default:
+            default:
+                return context.MkSolver();
+        }
     }
 
     /// <summary>
