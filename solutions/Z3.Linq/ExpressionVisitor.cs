@@ -355,10 +355,19 @@ public static class ExpressionVisitor
             return Visit(context, environment, result, param);
         }
 
-        // Filter for known Z3 operators.
-        if (method.IsGenericMethod && method.GetGenericMethodDefinition() == typeof(Z3Methods).GetMethod("Distinct"))
+        // Filter for known Z3 operators — the variadic "magic methods" (Distinct, Sum).
+        // All take a params array, so they share the same argument-extraction logic below
+        // (NewArrayExpression literals OR Select(...).ToArray() over a runtime collection).
+        // B3 factored the build step so each operator only supplies its Z3 builder.
+        var distinctMethod = typeof(Z3Methods).GetMethod("Distinct");
+        var sumMethod = typeof(Z3Methods).GetMethod("Sum");
+
+        bool isDistinct = method.IsGenericMethod && method.GetGenericMethodDefinition() == distinctMethod;
+        bool isSum = method.IsGenericMethod && method.GetGenericMethodDefinition() == sumMethod;
+
+        if (isDistinct || isSum)
         {
-            // We know the signature of the Distinct method call. Its argument is a params
+            // We know the signature of the method call. Its argument is a params
             // array, hence we expect a NewArrayExpression.
             IEnumerable? distinctExps = null;
 
@@ -399,13 +408,19 @@ public static class ExpressionVisitor
 
             if (distinctExps == null)
             {
-                throw new NotSupportedException("unsuported method call:" + method.ToString() + "with sub expression " + call.Arguments[0].ToString());
+                throw new NotSupportedException("unsupported method call: " + method + " with sub expression " + call.Arguments[0]);
             }
 
-            IEnumerable<Expr> args = from Expression arg in distinctExps 
+            IEnumerable<Expr> args = from Expression arg in distinctExps
                                         select Visit(context, environment, arg, param);
 
-            return context.MkDistinct(args.ToArray());
+            if (isDistinct)
+            {
+                return context.MkDistinct(args.ToArray());
+            }
+
+            // Sum -> MkAdd over the materialized terms.
+            return context.MkAdd(args.Cast<ArithExpr>().ToArray());
         }
 
         if (method.Name.StartsWith("get_"))
