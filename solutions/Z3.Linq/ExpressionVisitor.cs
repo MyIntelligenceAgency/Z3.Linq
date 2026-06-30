@@ -718,15 +718,23 @@ public static class ExpressionVisitor
                 {
                     var currentMember = hierarchy[hierarchyIdx].Member;
 
+                    // Walk the member chain by threading the running value: each level reads its
+                    // member from the object resolved at the previous level (val), not from the
+                    // original root (target). At idx 0, val == target, so the root level is
+                    // unchanged. Reading from target at every level breaks any chain of depth > 1
+                    // (e.g. a lambda capturing variables across two Roslyn display classes -
+                    // outer.jj accessed via inner.<outer-locals>.jj), throwing
+                    // "Field 'jj' ... is not a field on the target object which is of type
+                    // <inner-display-class>" because jj lives on the outer display class.
                     switch (currentMember.MemberType)
                     {
                         case MemberTypes.Property:
                             var property = (PropertyInfo)currentMember;
-                            val = property.GetValue(target);
+                            val = property.GetValue(val);
                             break;
                         case MemberTypes.Field:
                             var field = (FieldInfo)currentMember;
-                            val = field.GetValue(target);
+                            val = field.GetValue(val);
                             break;
                         default:
                             throw new NotSupportedException($"Unsupported constant {target} .");
