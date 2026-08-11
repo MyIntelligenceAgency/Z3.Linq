@@ -352,7 +352,14 @@ public class Theorem
         using Context ctx = this.context.CreateContext();
         var environment = GetEnvironment(ctx, typeof(T));
 
-        // UNSAT-core extraction needs assumption tracking on the solver.
+        // Deliberately uses the general-purpose combined solver (ctx.MkSolver()) and does NOT
+        // honor Z3Context.SolverKind/Tactics. UNSAT-core extraction relies on AssertAndTrack +
+        // Solver.UnsatCore, i.e. hypothesis tracking; MkSimpleSolver() and solvers built from a
+        // tactic that lacks an incremental core-extraction backend silently return an empty or
+        // partial core (a correctness regression, not a performance one). The combined solver is
+        // the one Z3 backend that guarantees UnsatCore support, so the diagnostic path is pinned
+        // to it regardless of the context's solving configuration. Solve<T>() (which only needs a
+        // model, not a core) is free to honor SolverKind/Tactics. See Z3Context.CreateSolver.
         Solver solver = ctx.MkSolver();
 
         var constraintList = GetConstraintsToAssert<T>().ToList();
