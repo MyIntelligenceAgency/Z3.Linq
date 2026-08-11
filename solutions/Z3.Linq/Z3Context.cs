@@ -49,6 +49,33 @@ public sealed class Z3Context : IDisposable
     public string? Logic { get; set; }
 
     /// <summary>
+    /// Optional ordered list of Z3 tactic names (e.g. <c>"simplify"</c>, <c>"solve-eqs"</c>,
+    /// <c>"smt"</c>, <c>"bit-blast"</c>, <c>"sat"</c>, <c>"qfbv"</c>) composed left-to-right with
+    /// <c>AndThen</c> to build the solver. When non-empty, this takes precedence over
+    /// <see cref="SolverKind"/>: the composed tactic's solver is used instead of a plain
+    /// <c>MkSolver</c>/<c>MkSimpleSolver</c>/<c>MkSolver(logic)</c>.
+    ///
+    /// Tactics expose Z3's proof-search pipeline (simplification, equality propagation,
+    /// bit-blasting to SAT, ...) to the DSL — a tactic sequence lets the caller drive the
+    /// strategy that a plain solver picks heuristically. Available names are enumerable via
+    /// <c>Context.NumTactics</c>/<c>Context.TacticNames</c>; unknown names throw
+    /// <see cref="Microsoft.Z3.Z3Exception"/> at solve time.
+    /// </summary>
+    /// <remarks>
+    /// DSL backlog item B10 (#4616): <see cref="SolverKind"/> reached the solver half of
+    /// "configurable solver/tactics"; this property reaches the tactics half. The two compose:
+    /// a non-empty <see cref="Tactics"/> overrides <see cref="SolverKind"/> because a tactic
+    /// already subsumes solver selection (a tactic ends in a SAT/SMT decision procedure).
+    /// </remarks>
+    /// <example>
+    /// Bit-vector problem solved through the dedicated bit-blasting pipeline:
+    /// <code>
+    /// using var ctx = new Z3Context { Tactics = new[] { "simplify", "bit-blast", "sat" } };
+    /// </code>
+    /// </example>
+    public IReadOnlyList<string>? Tactics { get; set; }
+
+    /// <summary>
     /// Sets a Z3 module/global parameter (e.g. <c>"timeout"</c>, <c>"random_seed"</c>,
     /// <c>"unsat_core"</c>) applied when the underlying <see cref="Context"/> is created.
     /// Returns this context to allow fluent chaining.
@@ -124,14 +151,24 @@ public sealed class Z3Context : IDisposable
     }
 
     /// <summary>
-    /// Creates the Z3 solver for a theorem according to <see cref="SolverKind"/> and
-    /// <see cref="Logic"/>. Centralizes the solver-factory choice that was previously
-    /// hard-coded to <c>ctx.MkSolver()</c> in <see cref="Theorem"/>. (DSL backlog B10, #4616.)
+    /// Creates the Z3 solver for a theorem according to <see cref="Tactics"/> (when set) or
+    /// <see cref="SolverKind"/> and <see cref="Logic"/>. Centralizes the solver-factory choice
+    /// that was previously hard-coded to <c>ctx.MkSolver()</c> in <see cref="Theorem"/>. (DSL
+    /// backlog B10, #4616: solver half via <see cref="SolverKind"/>, tactics half via
+    /// <see cref="Tactics"/>.)
     /// </summary>
     /// <param name="context">The native Z3 context the solver is created under.</param>
-    /// <returns>The configured solver.</returns>
+    /// <returns>The configured solver. A tactic-composed solver when <see cref="Tactics"/> is
+    /// non-empty; otherwise the <see cref="SolverKind"/>-selected solver.</returns>
     internal Solver CreateSolver(Context context)
     {
+        // Tactics take precedence over SolverKind: a tactic sequence already ends in a
+        // decision procedure, so layering SolverKind on top would be a no-op or a contradiction.
+        if (Tactics is { Count: > 0 })
+        {
+            return context.MkSolver(ComposeTactics(context));
+        }
+
         switch (SolverKind)
         {
             case SolverKind.Simple:
@@ -151,6 +188,28 @@ public sealed class Z3Context : IDisposable
             default:
                 return context.MkSolver();
         }
+    }
+
+    /// <summary>
+    /// Composes the <see cref="Tactics"/> sequence into a single Z3 tactic via
+    /// <c>AndThen</c> (left-to-right sequencing). <c>AndThen(t1, t2, ...)</c> requires at least
+    /// two tactics, so a single-element sequence is returned unwrapped.
+    /// </summary>
+    /// <param name="context">The native Z3 context used to build each tactic.</param>
+    /// <returns>The composed tactic.</returns>
+    /// <exception cref="Microsoft.Z3.Z3Exception">Thrown by Z3 if any name is not a known
+    /// tactic (the exception carries the offending name; available names are enumerable via
+    /// <c>Context.TacticNames</c>).</exception>
+    private Tactic ComposeTactics(Context context)
+    {
+        var names = Tactics!;
+        if (names.Count == 1)
+        {
+            return context.MkTactic(names[0]);
+        }
+
+        Tactic[] built = names.Select(context.MkTactic).ToArray();
+        return context.AndThen(built[0], built[1], built[2..]);
     }
 
     /// <summary>
