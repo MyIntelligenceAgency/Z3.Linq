@@ -141,6 +141,39 @@ using (var ctx = new Z3Context())
 }
 ```
 
+### Problem - Planning a Single Meal from a Menu
+
+In this example, a meal planner must choose **exactly one** recipe from a 5-item menu (one-hot selection). The native Z3 Pseudo-Boolean encoding propagates one-hot constraints more efficiently than the equivalent `MkIte`+`MkAdd` expansion, so the dedicated `ExactlyOne` magic method is the natural choice here.
+
+```csharp
+using (var ctx = new Z3Context())
+{
+    var theorem = ctx.NewTheorem<(bool pasta, bool stirfry, bool salad, bool soup, bool stew)>()
+        .Where(t => Z3Methods.ExactlyOne(t.pasta, t.stirfry, t.salad, t.soup, t.stew));
+
+    var result = theorem.Solve();
+
+    var picked = (result.pasta, result.stirfry, result.salad, result.soup, result.stew) switch
+    {
+        (true, _, _, _, _) => "Pasta",
+        (_, true, _, _, _) => "Stir-fry",
+        (_, _, true, _, _) => "Salad",
+        (_, _, _, true, _) => "Soup",
+        (_, _, _, _, true) => "Stew",
+        _ => "(none)"
+    };
+    Console.WriteLine($"Tonight's meal: {picked}");
+}
+```
+
+Three magic methods cover the common one-hot patterns, each mapping to native Z3 Pseudo-Boolean (`ctx.MkPBGe`):
+
+- `ExactlyOne(params bool[])` — at most one AND at least one of the indicators is true (the canonical one-hot)
+- `AtMostOne(params bool[])` — zero or one of the indicators is true (use when a domain predicate enforces at-least-one separately)
+- `AtLeastOne(params bool[])` — one or more of the indicators is true
+
+The dedicated encoding is measurably cheaper than the `MkIte`+`MkAdd` expansion on the planner's instance: native PB builds ~half the AST nodes, produces ~2.3× smaller SMT-LIB strings, and solves 3-6× faster on `n = 100` indicators (UNSAT case). The [`solutions/pb-bench`](solutions/pb-bench) harness records the comparison.
+
 ## Getting Started
 
 You can install the [Z3.Linq NuGet Package](https://www.nuget.org/packages/Z3.Linq/).
