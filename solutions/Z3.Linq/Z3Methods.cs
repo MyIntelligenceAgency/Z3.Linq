@@ -78,4 +78,47 @@ public static class Z3Methods
     {
         throw new NotSupportedException("This method should only be used in query expressions.");
     }
+
+    /// <summary>
+    /// Exactly-one: at most one and at least one of the given Boolean indicators is true.
+    /// Maps to native Z3 pseudo-Boolean (<c>ctx.MkPBGe</c> with weights {1..1} on the
+    /// indicators and on their negations). This is the canonical "one-hot" constraint,
+    /// used for example by notebook 09 (meal planner) to select exactly one recipe per slot.
+    /// </summary>
+    /// <param name="indicators">The Boolean indicators (typically theorem parameters).</param>
+    /// <returns>Predicate return value.</returns>
+    /// <remarks>
+    /// This method should only be used within LINQ expressions. Measurement on the fork
+    /// (pb-bench, c.8247): native <c>MkPBGe</c> builds ~half the AST nodes and runs 3-6x
+    /// faster on the planner's 7x5 instance than the equivalent <c>MkIte + MkAdd</c>
+    /// expansion. We expose the unweighted case only (see #10605 / #4616 backlog).
+    /// Backlog item B-pseudo-bool (the last open item of #4616).
+    /// </remarks>
+    public static bool ExactlyOne(params bool[] indicators)
+    {
+        throw new NotSupportedException("This method should only be used in query expressions.");
+    }
+
+    /// <summary>
+    /// At-most-one: zero or one of the given Boolean indicators is true.
+    /// Half of the exactly-one constraint; useful when at-least-one is enforced separately
+    /// (e.g. by a domain predicate).
+    /// </summary>
+    /// <param name="indicators">The Boolean indicators.</param>
+    /// <returns>Predicate return value.</returns>
+    public static bool AtMostOne(params bool[] indicators)
+    {
+        throw new NotSupportedException("This method should only be used in query expressions.");
+    }
+
+    /// <summary>
+    /// At-least-one: one or more of the given Boolean indicators is true.
+    /// The other half of exactly-one; useful when at-most-one is enforced separately.
+    /// </summary>
+    /// <param name="indicators">The Boolean indicators.</param>
+    /// <returns>Predicate return value.</returns>
+    public static bool AtLeastOne(params bool[] indicators)
+    {
+        throw new NotSupportedException("This method should only be used in query expressions.");
+    }
 }

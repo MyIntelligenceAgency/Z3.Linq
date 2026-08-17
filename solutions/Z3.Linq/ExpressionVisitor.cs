@@ -542,6 +542,99 @@ public static class ExpressionVisitor
             return context.MkAdd(args.Cast<ArithExpr>().ToArray());
         }
 
+        // Pseudo-Boolean unweighted constraints (#10605 / c.8247): ExactlyOne / AtMostOne /
+        // AtLeastOne. Each takes a bool[] (not generic T) because PB indicators must be
+        // Boolean. Native Z3 PB (MkPBGe) is measurably cheaper than MkIte + MkAdd
+        // expansion -- see pb-bench/Program.cs c.8247 measurement (n=100: 9ms vs 56ms).
+        var exactlyOneMethod = typeof(Z3Methods).GetMethod(nameof(Z3Methods.ExactlyOne));
+        var atMostOneMethod = typeof(Z3Methods).GetMethod(nameof(Z3Methods.AtMostOne));
+        var atLeastOneMethod = typeof(Z3Methods).GetMethod(nameof(Z3Methods.AtLeastOne));
+
+        if (method == exactlyOneMethod || method == atMostOneMethod || method == atLeastOneMethod)
+        {
+            // Materialize the params bool[] argument via the existing pattern
+            // (NewArrayExpression literal OR Select(...).ToArray() over a host collection).
+            // Empty `params` (no indicators) is handled below as a degenerate case.
+            IEnumerable? pbExps = null;
+            if (call.Arguments.Count == 0)
+            {
+                pbExps = Array.Empty<bool>();
+            }
+            else
+            {
+                var itemsExpression = call.Arguments[0];
+                if (itemsExpression is NewArrayExpression nap)
+                {
+                    pbExps = nap.Expressions;
+                }
+                else if (itemsExpression is MethodCallExpression mExp)
+                {
+                    // Reuse the Select(...).ToArray() pattern -- for PB we don't need the
+                    // generic predicate interpretation; the caller typically passes a
+                    // pre-computed array reference (e.g. a theorem parameter array).
+                    if (mExp.Method.IsGenericMethod && mExp.Method.GetGenericMethodDefinition() == typeof(Enumerable)
+                        .GetMethods().First(m => m.Name == nameof(Enumerable.ToArray)))
+                    {
+                        pbExps = (IEnumerable)ExpressionInterpreter.Instance.Interpret(mExp);
+                    }
+                }
+
+                if (pbExps == null)
+                {
+                    throw new NotSupportedException("unsupported method call: " + method + " with sub expression " + call.Arguments[0]);
+                }
+            }
+
+            // Translate each Boolean indicator. Inside a LINQ expression each element
+            // is either a theorem-parameter reference (becomes a BoolExpr) or a derived
+            // sub-expression (also a BoolExpr).
+            var indicators = new List<BoolExpr>();
+            foreach (Expression arg in pbExps)
+            {
+                var visited = Visit(context, environment, arg, param);
+                if (visited is not BoolExpr be)
+                {
+                    throw new InvalidOperationException(
+                        "Z3Methods.ExactlyOne / AtMostOne / AtLeastOne indicators must be Boolean, got " + visited?.GetType().Name);
+                }
+                indicators.Add(be);
+            }
+
+            int n = indicators.Count;
+            if (n == 0)
+            {
+                // Trivial cases: ExactlyOne/AtLeastOne with no indicators is unsat;
+                // AtMostOne is trivially true.
+                if (method == atMostOneMethod) return context.MkTrue();
+                return context.MkFalse();
+            }
+
+            // All weights are 1 (unweighted PB).
+            var weights = new int[n];
+            for (int i = 0; i < n; i++) weights[i] = 1;
+
+            if (method == atLeastOneMethod)
+            {
+                // sum(indicators) >= 1  i.e.  MkPBGe(weights, indicators, 1).
+                return context.MkPBGe(weights, indicators.ToArray(), 1);
+            }
+
+            if (method == atMostOneMethod)
+            {
+                // sum(not indicators) >= n-1  (i.e. at most one indicator is true).
+                var nots = new BoolExpr[n];
+                for (int i = 0; i < n; i++) nots[i] = context.MkNot(indicators[i]);
+                return context.MkPBGe(weights, nots, n - 1);
+            }
+
+            // ExactlyOne: at-least-one AND at-most-one.
+            var geLo = context.MkPBGe(weights, indicators.ToArray(), 1);
+            var notsE = new BoolExpr[n];
+            for (int i = 0; i < n; i++) notsE[i] = context.MkNot(indicators[i]);
+            var geHi = context.MkPBGe(weights, notsE, n - 1);
+            return context.MkAnd(geLo, geHi);
+        }
+
         // Bounded quantifiers (backlog B8, #4616): Z3Methods.ForAll / Z3Methods.Exists over a
         // finite, host-evaluable domain are unrolled into an MkAnd / MkOr of the predicate applied
         // to each domain element.
