@@ -37,7 +37,88 @@ internal static class Program
             MeasureOnce(n, "MkPBGe", useNativePb: true, forceUnsat: true);
             MeasureOnce(n, "MkIte+Add", useNativePb: false, forceUnsat: true);
         }
+
+        // Weighted band shape (c.8252, issue #10605): weights != 1 (kcal-like values),
+        // bound around half the total weight -- the nutrition-band form of notebook 09.
+        // SAT case: band alone is satisfiable. UNSAT case: forced indicators push the
+        // weighted sum past the ceiling while the band demands less.
+        Console.WriteLine();
+        Console.WriteLine("-- weighted bands (weights != 1) --");
+        foreach (var n in sizes)
+        {
+            MeasureWeightedOnce(n, "MkPBGe", useNativePb: true, forceUnsat: false);
+            MeasureWeightedOnce(n, "MkIte+Add", useNativePb: false, forceUnsat: false);
+            MeasureWeightedOnce(n, "MkPBGe", useNativePb: true, forceUnsat: true);
+            MeasureWeightedOnce(n, "MkIte+Add", useNativePb: false, forceUnsat: true);
+        }
         return 0;
+    }
+
+    private static void MeasureWeightedOnce(int n, string variant, bool useNativePb, bool forceUnsat)
+    {
+        using var ctx = new Context(new Dictionary<string, string>
+        {
+            { "MODEL", "true" },
+            { "TIMEOUT", "5000" },
+        });
+
+        var bs = new BoolExpr[n];
+        for (int i = 0; i < n; i++) bs[i] = ctx.MkBoolConst($"b{i}");
+
+        // Deterministic kcal-like weights and a band around half the total.
+        var weights = new int[n];
+        int total = 0;
+        for (int i = 0; i < n; i++)
+        {
+            weights[i] = 100 + (i * 137) % 400;
+            total += weights[i];
+        }
+        int floor = total / 2 - 50;   // band: [half-50, half+50]
+        int ceiling = total / 2 + 50;
+
+        var sw = Stopwatch.StartNew();
+        BoolExpr lo, hi;
+
+        if (useNativePb)
+        {
+            lo = ctx.MkPBGe(weights, bs, floor);
+            hi = ctx.MkPBLe(weights, bs, ceiling);
+        }
+        else
+        {
+            // MkIte+MkAdd expansion: sum_i (ite b_i w_i 0) then compare via MkGe/MkLe.
+            var terms = new ArithExpr[n];
+            for (int i = 0; i < n; i++)
+            {
+                terms[i] = (ArithExpr)ctx.MkITE(bs[i], ctx.MkInt(weights[i]), ctx.MkInt(0));
+            }
+            var sum = ctx.MkAdd(terms);
+            lo = ctx.MkGe(sum, ctx.MkInt(floor));
+            hi = ctx.MkLe(sum, ctx.MkInt(ceiling));
+        }
+
+        var solver = ctx.MkSolver();
+        solver.Assert(lo);
+        solver.Assert(hi);
+        if (forceUnsat)
+        {
+            // Force enough heavy indicators on to blow past the ceiling.
+            int acc = 0;
+            for (int i = 0; i < n && acc <= ceiling; i++)
+            {
+                solver.Assert(ctx.MkEq(bs[i], ctx.MkTrue()));
+                acc += weights[i];
+            }
+        }
+        var status = solver.Check();
+
+        sw.Stop();
+
+        var constraint = ctx.MkAnd(lo, hi);
+        var nodes = CountNodes(constraint);
+        var smt2Len = Encoding.UTF8.GetByteCount(constraint.ToString());
+
+        Console.WriteLine($"{n}\t{variant}\t{nodes}\t{smt2Len}\t{sw.ElapsedMilliseconds}\t{status}");
     }
 
     private static void MeasureOnce(int n, string variant, bool useNativePb, bool forceUnsat)

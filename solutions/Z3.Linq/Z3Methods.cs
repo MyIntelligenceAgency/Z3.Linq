@@ -121,4 +121,61 @@ public static class Z3Methods
     {
         throw new NotSupportedException("This method should only be used in query expressions.");
     }
+
+    /// <summary>
+    /// Weighted at-least: <c>sum(weights[i] * indicators[i]) &gt;= bound</c>, mapped to native
+    /// Z3 pseudo-Boolean (<c>ctx.MkPBGe</c>). This is the band form used by notebook 09
+    /// (meal planner nutrition bounds): unlike the unweighted trio above, the weights are
+    /// host constants (e.g. kcal per recipe) and the bound is the nutritional floor.
+    /// </summary>
+    /// <param name="bound">The lower bound on the weighted sum (host constant).</param>
+    /// <param name="weights">Weight of each indicator, evaluated in the host.</param>
+    /// <param name="indicators">The Boolean indicators (typically theorem parameters).</param>
+    /// <returns>Predicate return value.</returns>
+    /// <remarks>
+    /// This method should only be used within LINQ expressions. <paramref name="weights"/> must
+    /// have exactly as many elements as <paramref name="indicators"/>. Design note (issue #10605):
+    /// a dedicated magic method is preferred over a weighted <c>Sum</c> overload because it maps
+    /// 1:1 onto native <c>MkPBGe</c>, keeping Z3's pseudo-Boolean theory solver in charge of
+    /// propagation -- pb-bench (c.8252) measures the gap against the <c>MkIte + MkAdd</c>
+    /// expansion on the weighted band shape.
+    /// </remarks>
+    public static bool WeightedAtLeast(int bound, int[] weights, params bool[] indicators)
+    {
+        throw new NotSupportedException("This method should only be used in query expressions.");
+    }
+
+    /// <summary>
+    /// Weighted at-most: <c>sum(weights[i] * indicators[i]) &lt;= bound</c>, mapped to native
+    /// Z3 pseudo-Boolean (<c>ctx.MkPBLe</c>). Upper band form (e.g. sugar/sodium ceilings).
+    /// </summary>
+    /// <param name="bound">The upper bound on the weighted sum (host constant).</param>
+    /// <param name="weights">Weight of each indicator, evaluated in the host.</param>
+    /// <param name="indicators">The Boolean indicators (typically theorem parameters).</param>
+    /// <returns>Predicate return value.</returns>
+    /// <remarks>
+    /// This method should only be used within LINQ expressions. <paramref name="weights"/> must
+    /// have exactly as many elements as <paramref name="indicators"/>.
+    /// </remarks>
+    public static bool WeightedAtMost(int bound, int[] weights, params bool[] indicators)
+    {
+        throw new NotSupportedException("This method should only be used in query expressions.");
+    }
+
+    /// <summary>
+    /// Weighted exactly: <c>sum(weights[i] * indicators[i]) == bound</c>, mapped to native
+    /// Z3 pseudo-Boolean (<c>ctx.MkPBEq</c>). Equality band form (e.g. exact macro split).
+    /// </summary>
+    /// <param name="bound">The required value of the weighted sum (host constant).</param>
+    /// <param name="weights">Weight of each indicator, evaluated in the host.</param>
+    /// <param name="indicators">The Boolean indicators (typically theorem parameters).</param>
+    /// <returns>Predicate return value.</returns>
+    /// <remarks>
+    /// This method should only be used within LINQ expressions. <paramref name="weights"/> must
+    /// have exactly as many elements as <paramref name="indicators"/>.
+    /// </remarks>
+    public static bool WeightedExactly(int bound, int[] weights, params bool[] indicators)
+    {
+        throw new NotSupportedException("This method should only be used in query expressions.");
+    }
 }

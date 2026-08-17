@@ -635,6 +635,100 @@ public static class ExpressionVisitor
             return context.MkAnd(geLo, geHi);
         }
 
+        // Pseudo-Boolean weighted constraints (#10605 / c.8252): WeightedAtLeast /
+        // WeightedAtMost / WeightedExactly -- the band forms (weights != 1) used by
+        // notebook 09's nutrition bounds. Signature:
+        //   (int bound, int[] weights, params bool[] indicators)
+        // bound and weights are host-evaluated; indicators go through the same
+        // materialization as the unweighted trio above. Each maps 1:1 onto the native
+        // MkPBGe / MkPBLe / MkPBEq (preserving Z3's PB theory propagation).
+        var weightedAtLeastMethod = typeof(Z3Methods).GetMethod(nameof(Z3Methods.WeightedAtLeast));
+        var weightedAtMostMethod = typeof(Z3Methods).GetMethod(nameof(Z3Methods.WeightedAtMost));
+        var weightedExactlyMethod = typeof(Z3Methods).GetMethod(nameof(Z3Methods.WeightedExactly));
+
+        if (method == weightedAtLeastMethod || method == weightedAtMostMethod || method == weightedExactlyMethod)
+        {
+            // Host-evaluate the bound (int) and the weights (int[]): both are constants at
+            // translation time -- either literals, a NewArrayExpression of literals, or a
+            // closure-captured value. PartialEval normalizes the tree, Interpret yields the value.
+            var boundExpr = PartialEvaluator.PartialEval(call.Arguments[0], ExpressionInterpreter.Instance);
+            var bound = Convert.ToInt32(ExpressionInterpreter.Instance.Interpret(boundExpr));
+
+            var weightsExpr = PartialEvaluator.PartialEval(call.Arguments[1], ExpressionInterpreter.Instance);
+            if (ExpressionInterpreter.Instance.Interpret(weightsExpr) is not int[] weights)
+            {
+                throw new InvalidOperationException(
+                    "Z3Methods.Weighted* weights must be an int[] known at translation time (literal array or captured local), got " + weightsExpr.NodeType);
+            }
+
+            // Materialize the params bool[] indicators like the unweighted block.
+            IEnumerable? wpbExps = null;
+            if (call.Arguments.Count >= 3)
+            {
+                var itemsExpression = call.Arguments[2];
+                if (itemsExpression is NewArrayExpression wnap)
+                {
+                    wpbExps = wnap.Expressions;
+                }
+                else if (itemsExpression is MethodCallExpression wmExp)
+                {
+                    if (wmExp.Method.IsGenericMethod && wmExp.Method.GetGenericMethodDefinition() == typeof(Enumerable)
+                        .GetMethods().First(m => m.Name == nameof(Enumerable.ToArray)))
+                    {
+                        wpbExps = (IEnumerable)ExpressionInterpreter.Instance.Interpret(wmExp);
+                    }
+                }
+
+                if (wpbExps == null)
+                {
+                    throw new NotSupportedException("unsupported method call: " + method + " with sub expression " + call.Arguments[2]);
+                }
+            }
+            else
+            {
+                wpbExps = Array.Empty<bool>();
+            }
+
+            var windicators = new List<BoolExpr>();
+            foreach (Expression arg in wpbExps)
+            {
+                var visited = Visit(context, environment, arg, param);
+                if (visited is not BoolExpr be)
+                {
+                    throw new InvalidOperationException(
+                        "Z3Methods.Weighted* indicators must be Boolean, got " + visited?.GetType().Name);
+                }
+                windicators.Add(be);
+            }
+
+            int wn = windicators.Count;
+            if (weights.Length != wn)
+            {
+                throw new InvalidOperationException(
+                    $"Z3Methods.Weighted* weights/indicators length mismatch: {weights.Length} weights for {wn} indicators");
+            }
+
+            if (wn == 0)
+            {
+                // Degenerate: the weighted sum of an empty indicator set is 0.
+                if (method == weightedAtLeastMethod) return bound <= 0 ? context.MkTrue() : context.MkFalse();
+                if (method == weightedAtMostMethod) return bound >= 0 ? context.MkTrue() : context.MkFalse();
+                return bound == 0 ? context.MkTrue() : context.MkFalse();
+            }
+
+            if (method == weightedAtLeastMethod)
+            {
+                return context.MkPBGe(weights, windicators.ToArray(), bound);
+            }
+
+            if (method == weightedAtMostMethod)
+            {
+                return context.MkPBLe(weights, windicators.ToArray(), bound);
+            }
+
+            return context.MkPBEq(weights, windicators.ToArray(), bound);
+        }
+
         // Bounded quantifiers (backlog B8, #4616): Z3Methods.ForAll / Z3Methods.Exists over a
         // finite, host-evaluable domain are unrolled into an MkAnd / MkOr of the predicate applied
         // to each domain element.
