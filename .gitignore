@@ -356,4 +356,8 @@ _codeCoverage/
 _packages/
 *.sbom.*
 # Local publish output for Polyglot repro notebooks (dotnet publish -o .deploy)
-.deploy/
+# .deploy DLLs are COMMITTED since #11431 (decision ai-01 2026-08-18, Option A,
+# mirror of Resharp/.deploy in CoursIA): fresh clones must resolve #r ".deploy/*.dll"
+# without a local build step. Other .deploy artifacts stay local-only.
+.deploy/*
+!.deploy/*.dll
