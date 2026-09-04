@@ -126,9 +126,14 @@ $SkipInit = $false
 $SkipVersion = $false
 $SkipBuild = $false
 $CleanBuild = $Clean
-$SkipTest = $true
+# Tests were previously skipped in CI; the DateTime round-trip regression proof (#14445)
+# requires the pipeline's Test phase to actually execute dotnet test.
+$SkipTest = $false
 $SkipTestReport = $false
-$SkipAnalysis = $false
+# The covenant SBOM tool pinned by Endjin.RecommendedPractices.Build 1.5.0+ (covenant 0.12.0)
+# targets net6.0, which is not installed on ubuntu-24.04 runners (exit code 150).
+# The Analysis phase is skipped via compilePhaseTasks in build.yml instead.
+$SkipAnalysis = $true
 $SkipPackage = $false
 $SkipPublish = $false
 

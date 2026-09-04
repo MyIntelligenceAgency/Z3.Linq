@@ -55,6 +55,10 @@ jobs:
     uses: endjin/Endjin.RecommendedPractices.GitHubActions/.github/workflows/scripted-build-pipeline.yml@main
     with:
       netSdkVersion: '8.x'
+      # The covenant SBOM tool pinned by Endjin.RecommendedPractices.Build 1.5.0+
+      # (covenant 0.12.0) targets net6.0, unavailable on ubuntu-24.04 runners.
+      # Skip the analysis phase; upstream endjin fixed this by migrating to ZeroFailed.
+      compilePhaseTasks: 'Build'
       # workflow_dispatch inputs are always strings, the type property is just for the UI
       forcePublish: ${{ github.event.inputs.forcePublish == 'true' }}
       skipCleanup: ${{ github.event.inputs.skipCleanup == 'true' }}
