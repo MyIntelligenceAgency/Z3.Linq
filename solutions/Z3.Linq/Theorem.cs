@@ -665,7 +665,12 @@ public class Theorem
                     value = ReadIntegral(val, asInt64: true);
                     break;
                 case TypeCode.DateTime:
-                    value = DateTime.FromFileTime(((IntNum)val).Int64);
+                    // Ticks on the UTC timeline (ExpressionVisitor.ToUtcTicks), so the value is
+                    // read back as UTC from the same ticks. It used to be a Windows file time,
+                    // read with FromFileTime - local time, which shifted the value by the
+                    // machine's UTC offset and made the same theorem answer differently on
+                    // different machines (endjin #56, #14445 defect 2).
+                    value = ToDateTime(((IntNum)val).Int64, parameter.Name);
                     break;
                 case TypeCode.Boolean:
                     value = val.IsTrue;
@@ -723,6 +728,28 @@ public class Theorem
         }
 
         return value!;
+    }
+
+    /// <summary>
+    /// Reads a <see cref="DateTime"/> symbol back from the ticks Z3 holds it as.
+    /// </summary>
+    /// <remarks>
+    /// The symbol is an unbounded integer, so Z3 can satisfy a constraint with a value no
+    /// <see cref="DateTime"/> can hold - <c>t.X1 &gt; DateTime.MaxValue</c> is satisfiable in
+    /// integers. The <see cref="DateTime"/> constructor would throw for that anyway; this throws
+    /// first, naming the symbol and the range, since the constructor names neither. Port of
+    /// endjin/Z3.Linq#95. See endjin/Z3.Linq#87 for bounding the symbol so Z3 cannot pick
+    /// such a value.
+    /// </remarks>
+    private static DateTime ToDateTime(long ticks, string name)
+    {
+        if (ticks < DateTime.MinValue.Ticks || ticks > DateTime.MaxValue.Ticks)
+        {
+            throw new OverflowException(
+                $"The value Z3 chose for the DateTime symbol {name} is outside the range a DateTime can hold, 0001-01-01 to 9999-12-31. See https://github.com/endjin/Z3.Linq/issues/87.");
+        }
+
+        return new DateTime(ticks, DateTimeKind.Utc);
     }
 
     /// <summary>
@@ -901,7 +928,7 @@ public class Theorem
             case TypeCode.Int64:
                 return ReadIntegral(numValExpr, asInt64: true);
             case TypeCode.DateTime:
-                return DateTime.FromFileTime(((IntNum)numValExpr).Int64);
+                return ToDateTime(((IntNum)numValExpr).Int64, parameter.Name);
             case TypeCode.Boolean:
                 return numValExpr.IsTrue;
             case TypeCode.Single:
