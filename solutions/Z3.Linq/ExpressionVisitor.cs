@@ -865,7 +865,7 @@ public static class ExpressionVisitor
                 // #4616 — the real-literal emission path). InvariantCulture guarantees a '.' separator.
                 return context.MkReal(Convert.ToString(val, System.Globalization.CultureInfo.InvariantCulture)!);
             case TypeCode.DateTime:
-                return context.MkInt(((DateTime)val).ToFileTimeUtc());
+                return context.MkInt(ToUtcTicks((DateTime)val));
             case TypeCode.String:
                 return context.MkString(val.ToString());
             default:
@@ -1028,5 +1028,23 @@ public static class ExpressionVisitor
     private static Expr VisitUnary(Context context, Environment environment, UnaryExpression expression, ParameterExpression param, Func<Context, Expr, Expr> ctor)
     {
         return ctor(context, Visit(context, environment, expression.Operand, param));
+    }
+
+    /// <summary>
+    /// The ticks of <paramref name="value"/> on the UTC timeline, which is how a
+    /// <see cref="DateTime"/> is encoded for Z3.
+    /// </summary>
+    /// <remarks>
+    /// A <see cref="DateTimeKind.Local"/> value is converted to UTC; an
+    /// <see cref="DateTimeKind.Unspecified"/> one is taken to be UTC already, as
+    /// <see cref="DateTime.ToFileTimeUtc"/> - the previous encoding - did. The read path in
+    /// <c>Theorem</c> produces a <see cref="DateTimeKind.Utc"/> value from the same ticks.
+    /// Port of endjin/Z3.Linq#95 (their #56/#83): a Windows file time counted from 1601
+    /// threw ArgumentOutOfRangeException for anything earlier, so no pre-1601 instant could
+    /// be written or read (#14445 defect 1).
+    /// </remarks>
+    internal static long ToUtcTicks(DateTime value)
+    {
+        return value.Kind == DateTimeKind.Local ? value.ToUniversalTime().Ticks : value.Ticks;
     }
 }
