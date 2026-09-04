@@ -55,6 +55,13 @@ jobs:
     uses: endjin/Endjin.RecommendedPractices.GitHubActions/.github/workflows/scripted-build-pipeline.yml@main
     with:
       netSdkVersion: '8.x'
+      # Microsoft.Z3 4.12.2 (last nuget.org release) ships native binaries for
+      # win-x64 and osx-x64 only: on Linux the managed wrapper binds to the ancient
+      # system libz3 and dies with EntryPointNotFoundException at the first Context.
+      # Upstream fixed this via the GitHub-release 5.1.0 package + local feed; for
+      # this branch we run the pipeline on Windows where the shipped win-x64 native
+      # resolves exactly as it does on local dev machines.
+      runsOn: windows-latest
       # The covenant SBOM tool pinned by Endjin.RecommendedPractices.Build 1.5.0+
       # (covenant 0.12.0) targets net6.0, unavailable on ubuntu-24.04 runners.
       # Skip the analysis phase; upstream endjin fixed this by migrating to ZeroFailed.
