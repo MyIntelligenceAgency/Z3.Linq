@@ -194,8 +194,10 @@ Then you can copy any of the above samples.
 
 ### For Visual Studio
 
-Add the `Z3.Linq` package.
-Configure your application to [target x64 platform](https://docs.microsoft.com/en-us/visualstudio/ide/how-to-configure-projects-to-target-platforms?view=vs-2022). This is a requirement as `Z3.Linq` uses the [Microsoft.Z3](https://www.nuget.org/packages/Microsoft.Z3/) package.
+Add the `Z3.Linq` package. No platform target is needed: `Microsoft.Z3` supplies native binaries for x64 and arm64 on Windows, Linux and macOS, and the default `AnyCPU` resolves the right one.
+
+> [!NOTE]
+> This fork builds against `Microsoft.Z3` 5.1.0, which is not published on nuget.org (Z3 stopped publishing there after 4.12.2, the last version with only `win-x64` and `osx-x64` native binaries - on Linux or arm64 it restores successfully and then throws `DllNotFoundException` on the first solve). The package comes from the [Z3 GitHub release](https://github.com/Z3Prover/z3/releases) via a local folder feed - run `./scripts/Install-Z3Package.ps1` (the InvokeBuild pipeline does it automatically) before `dotnet restore` on a clean clone.
 
 ## Contributing
 
