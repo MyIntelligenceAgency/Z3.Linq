@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
@@ -13,10 +14,36 @@
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
     <PackageReference Include="xunit" Version="2.9.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+=======
+<Project Sdk="MSTest.Sdk">
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>Z3.Linq.Tests</RootNamespace>
+    <!-- The doc comments here are validated like everyone else's (Directory.Build.props), but
+         a test's name is its documentation and CS1591 would demand a comment on every test
+         class and method. See #82. -->
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <!-- Brings in the Microsoft Code Coverage and TRX report MTP extensions. -->
+    <TestingExtensionsProfile>Default</TestingExtensionsProfile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Shouldly" />
+>>>>>>> endjin/feature/spectre-demos
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\Z3.Linq\Z3.Linq.csproj" />
+<<<<<<< HEAD
+=======
+    <!-- The acceptance tests solve the sample theorems as published. Examples adds no packages
+         of its own; it references only Z3.Linq. -->
+    <ProjectReference Include="..\Z3.Linq.Examples\Z3.Linq.Examples.csproj" />
+>>>>>>> endjin/feature/spectre-demos
   </ItemGroup>
 
 </Project>

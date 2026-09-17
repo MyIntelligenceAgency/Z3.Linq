@@ -46,7 +46,7 @@ jobs:
       id: prepareEnvVarsAndSecrets
       with:
         environmentVariablesYaml: |
-          BUILDVAR_NuGetPublishSource: "${{ startsWith(github.ref, 'refs/tags/') && 'https://api.nuget.org/v3/index.json' || 'https://nuget.pkg.github.com/endjin/index.json' }}"
+          ZF_NUGET_PUBLISH_SOURCE: "${{ startsWith(github.ref, 'refs/tags/') && 'https://api.nuget.org/v3/index.json' || 'https://nuget.pkg.github.com/endjin/index.json' }}"
         secretsYaml: |
           NUGET_API_KEY: "${{ startsWith(github.ref, 'refs/tags/') && secrets.ENDJIN_NUGET_APIKEY || secrets.ENDJIN_GITHUB_PUBLISHER_PAT }}"
 
@@ -54,6 +54,7 @@ jobs:
     needs: prepareConfig
     uses: endjin/Endjin.RecommendedPractices.GitHubActions/.github/workflows/scripted-build-pipeline.yml@main
     with:
+<<<<<<< HEAD
       netSdkVersion: '8.x'
       # Microsoft.Z3 4.12.2 (last nuget.org release) ships native binaries for
       # win-x64 and osx-x64 only: on Linux the managed wrapper binds to the ancient
@@ -66,6 +67,9 @@ jobs:
       # (covenant 0.12.0) targets net6.0, unavailable on ubuntu-24.04 runners.
       # Skip the analysis phase; upstream endjin fixed this by migrating to ZeroFailed.
       compilePhaseTasks: 'Build'
+=======
+      netSdkVersion: '10.x'
+>>>>>>> endjin/feature/spectre-demos
       # workflow_dispatch inputs are always strings, the type property is just for the UI
       forcePublish: ${{ github.event.inputs.forcePublish == 'true' }}
       skipCleanup: ${{ github.event.inputs.skipCleanup == 'true' }}
