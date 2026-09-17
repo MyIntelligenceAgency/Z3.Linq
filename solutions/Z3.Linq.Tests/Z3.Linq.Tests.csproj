@@ -1,22 +1,28 @@
-<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="MSTest.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
-    <PlatformTarget>x64</PlatformTarget>
     <IsPackable>false</IsPackable>
-    <IsTestProject>true</IsTestProject>
+    <RootNamespace>Z3.Linq.Tests</RootNamespace>
+    <!-- The doc comments here are validated like everyone else's (Directory.Build.props), but
+         a test's name is its documentation and CS1591 would demand a comment on every test
+         class and method. See #82. -->
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <!-- Brings in the Microsoft Code Coverage and TRX report MTP extensions. -->
+    <TestingExtensionsProfile>Default</TestingExtensionsProfile>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.NET.Test.Sdk" />
-    <PackageReference Include="xunit" />
-    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="Shouldly" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\Z3.Linq\Z3.Linq.csproj" />
+    <!-- The acceptance tests solve the sample theorems as published. Examples adds no packages
+         of its own; it references only Z3.Linq. -->
+    <ProjectReference Include="..\Z3.Linq.Examples\Z3.Linq.Examples.csproj" />
   </ItemGroup>
 
 </Project>
