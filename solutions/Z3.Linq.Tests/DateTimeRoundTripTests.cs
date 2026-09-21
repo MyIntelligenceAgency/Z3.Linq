@@ -79,19 +79,36 @@ public class DateTimeRoundTripTests
     }
 
     [Fact]
-    public void Solve_DateTimeBeyondRange_ThrowsNamingTheSymbol()
+    public void Solve_DateTimeBeyondRange_IsUnsatisfiable()
     {
-        // The symbol is an unbounded integer to Z3: t.D > DateTime.MaxValue is satisfiable
-        // with ticks no DateTime can hold. The read throws OverflowException naming the
-        // symbol, rather than letting the DateTime constructor throw namelessly
-        // (endjin/Z3.Linq#87 for the bounding follow-up).
+        // The symbol used to be an unbounded integer to Z3: t.D > DateTime.MaxValue was
+        // satisfiable with ticks no DateTime can hold, and the read threw. It is now bounded to
+        // the type's range (endjin/Z3.Linq#87, ported as their #98), so the true answer is
+        // "no model" rather than "a model that cannot be read".
+        using var ctx = new Z3Context();
+
+        var solution = ctx.NewTheorem<DateTimeBag>()
+            .Where(b => b.D > DateTime.MaxValue)
+            .Solve();
+
+        Assert.Null(solution);
+    }
+
+    [Fact]
+    public void Solve_DateTimeInListBeyondRange_StillThrowsNamingTheSymbol()
+    {
+        // The bounds reach scalars only. A collection is an array from Int to the element sort and
+        // its length is not known when the theorem is built, so an element is still read with a
+        // checked conversion -- and that read is what this pins. Without it, dropping the old
+        // scalar test above would have removed the only coverage of the checked element read
+        // (règle anti-régression : on déplace la couverture, on ne la supprime pas).
         using var ctx = new Z3Context();
 
         var ex = Assert.Throws<OverflowException>(() =>
-            ctx.NewTheorem<DateTimeBag>()
-                .Where(b => b.D > DateTime.MaxValue)
+            ctx.NewTheorem<DateTimeListBag>()
+                .Where(b => b.Values[0] > DateTime.MaxValue)
                 .Solve());
 
-        Assert.Contains("D", ex.Message);
+        Assert.Contains("Values", ex.Message);
     }
 }
