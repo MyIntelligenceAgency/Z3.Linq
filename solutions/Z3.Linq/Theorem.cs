@@ -658,6 +658,8 @@ public class Theorem
                     value = val.String;
                     break;
                 case TypeCode.Int16:
+                    value = ToInt16((long)ReadIntegral(val, asInt64: true), parameter.Name);
+                    break;
                 case TypeCode.Int32:
                     value = ReadIntegral(val, asInt64: false);
                     break;
@@ -750,6 +752,24 @@ public class Theorem
         }
 
         return new DateTime(ticks, DateTimeKind.Utc);
+    }
+
+    /// <summary>
+    /// Reads a short (Int16) symbol back from the Z3 model. The symbol is an unbounded
+    /// integer to Z3, so a satisfiable theorem can still choose a value no short can hold;
+    /// the read throws <see cref="OverflowException"/> naming the symbol (mirroring
+    /// <see cref="ToDateTime"/>) instead of letting reflection fail later with a
+    /// type-mismatch <see cref="ArgumentException"/> far from the cause (#17302).
+    /// </summary>
+    private static short ToInt16(long value, string name)
+    {
+        if (value < short.MinValue || value > short.MaxValue)
+        {
+            throw new OverflowException(
+                $"The value Z3 chose for the short (Int16) symbol {name} is outside the range a short can hold, -32768 to 32767.");
+        }
+
+        return (short)value;
     }
 
     /// <summary>
@@ -923,6 +943,7 @@ public class Theorem
             case TypeCode.String:
                 return numValExpr.String;
             case TypeCode.Int16:
+                return ToInt16((long)ReadIntegral(numValExpr, asInt64: true), parameter.Name);
             case TypeCode.Int32:
                 return ReadIntegral(numValExpr, asInt64: false);
             case TypeCode.Int64:
