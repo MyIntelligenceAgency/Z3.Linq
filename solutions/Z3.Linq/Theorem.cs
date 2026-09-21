@@ -1,13 +1,12 @@
-namespace Z3.Linq;
-
+﻿namespace Z3.Linq;
+ 
 using Microsoft.Z3;
-
-using MiaPlaza.ExpressionUtils;
-using MiaPlaza.ExpressionUtils.Evaluating;
 
 using System;
 using System.Collections;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Linq;
 using System.Linq.Expressions;
@@ -20,15 +19,14 @@ using System.Runtime.CompilerServices;
 public class Theorem
 {
     /// <summary>
-    /// Theorem constraints (hard: must hold for a solution to exist).
+    /// Theorem constraints.
     /// </summary>
     private readonly IEnumerable<LambdaExpression> constraints;
 
     /// <summary>
-    /// Soft theorem constraints (weighted: each may be violated at the cost of its weight; the solver
-    /// minimizes the total weight of violated soft constraints — weighted MaxSAT, gap B1 of #4616).
+    /// The instance passed to <c>NewTheorem</c>, if any, whose collections give theirs a length.
     /// </summary>
-    private readonly IEnumerable<SoftConstraint> softConstraints;
+    private readonly object? template;
 
     /// <summary>
     /// Z3 context under which the theorem is solved.
@@ -36,21 +34,11 @@ public class Theorem
     private readonly Z3Context context;
 
     /// <summary>
-    /// A soft (weighted) constraint: a boolean predicate that the solver tries — but is not required — to
-    /// satisfy. Violating it costs <see cref="Weight"/>; the optimizer minimizes the sum of violated weights.
-    /// Constraints sharing a <see cref="Group"/> name are aggregated into one MaxSAT objective by Z3.
-    /// </summary>
-    /// <param name="Constraint">The boolean predicate lambda over the theorem environment.</param>
-    /// <param name="Weight">The penalty incurred when the constraint is left unsatisfied (must be &gt; 0).</param>
-    /// <param name="Group">The MaxSAT objective group the constraint belongs to.</param>
-    protected internal readonly record struct SoftConstraint(LambdaExpression Constraint, int Weight, string Group);
-
-    /// <summary>
     /// Creates a new theorem for the given Z3 context.
     /// </summary>
     /// <param name="context">Z3 context.</param>
     protected Theorem(Z3Context context)
-        : this(context, new List<LambdaExpression>())
+        : this(context, [], null)
     {
     }
 
@@ -58,49 +46,42 @@ public class Theorem
     /// Creates a new pre-constrained theorem for the given Z3 context.
     /// </summary>
     /// <param name="context">Z3 context.</param>
-    /// <param name="constraints">Hard constraints to apply to the created theorem.</param>
+    /// <param name="constraints">Constraints to apply to the created theorem.</param>
     protected Theorem(Z3Context context, IEnumerable<LambdaExpression> constraints)
-        : this(context, constraints, new List<SoftConstraint>())
+        : this(context, constraints, null)
     {
     }
 
     /// <summary>
-    /// Creates a new pre-constrained theorem (hard + soft) for the given Z3 context.
+    /// Creates a new pre-constrained theorem for the given Z3 context, with a template instance.
     /// </summary>
     /// <param name="context">Z3 context.</param>
-    /// <param name="constraints">Hard constraints to apply to the created theorem.</param>
-    /// <param name="softConstraints">Weighted soft constraints (MaxSAT) to apply to the created theorem.</param>
-    protected Theorem(Z3Context context, IEnumerable<LambdaExpression> constraints, IEnumerable<SoftConstraint> softConstraints)
+    /// <param name="constraints">Constraints to apply to the created theorem.</param>
+    /// <param name="template">
+    /// An instance of the environment type whose collections supply a length to the solution's,
+    /// or <see langword="null"/>. See #78.
+    /// </param>
+    protected Theorem(Z3Context context, IEnumerable<LambdaExpression> constraints, object? template)
     {
         this.context = context;
         this.constraints = constraints;
-        this.softConstraints = softConstraints;
+        this.template = template;
     }
 
     /// <summary>
-    /// Gets the hard constraints of the theorem.
+    /// Gets the constraints of the theorem.
     /// </summary>
     protected IEnumerable<LambdaExpression> Constraints => constraints;
 
     /// <summary>
-    /// Gets the soft (weighted MaxSAT) constraints of the theorem.
+    /// Gets the template instance the theorem was created from, if any.
     /// </summary>
-    protected IEnumerable<SoftConstraint> SoftConstraints => softConstraints;
+    protected object? Template => template;
 
     /// <summary>
     /// Gets the Z3 context under which the theorem is solved.
     /// </summary>
     protected Z3Context Context => context;
-
-    /// <summary>
-    /// Controls how collection (array/IEnumerable) properties are modeled in Z3.
-    /// <list type="bullet">
-    /// <item><term>Array</term><description>Z3 array theory: a single <c>ArrayExpr</c> with <c>Select</c>/<c>Store</c> (supports nested <c>int[][]</c>).</description></item>
-    /// <item><term>Constants</term><description>One Z3 constant per element, created lazily on index access via <see cref="MultipleEnvironment"/> (the classic endjin binding model).</description></item>
-    /// </list>
-    /// Default is <see cref="CollectionHandling.Array"/> to preserve existing behavior (incl. nested-array support).
-    /// </summary>
-    public CollectionHandling DefaultCollectionHandling { get; set; } = CollectionHandling.Array;
 
     /// <summary>
     /// Returns a comma-separated representation of the constraints embodied in the theorem.
@@ -115,105 +96,86 @@ public class Theorem
     /// Solves the theorem using Z3.
     /// </summary>
     /// <typeparam name="T">Theorem environment type.</typeparam>
-    /// <returns>Result of solving the theorem; default(T) if the theorem cannot be satisfied.</returns>
-    protected T? Solve<T>()
+    /// <returns>Result of solving the theorem; <c>default(T)</c> if the theorem cannot be satisfied.</returns>
+    /// <param name="cancellationToken">A token that interrupts the solve.</param>
+    /// <remarks>
+    /// For a value-type environment <c>default(T)</c> is a real, populated instance - all zeroes -
+    /// and so cannot be told apart from a solution in which every symbol happens to be zero. Use
+    /// <see cref="TrySolve{T}(out T, CancellationToken)"/> where that matters. See #57.
+    /// </remarks>
+    protected T? Solve<T>(CancellationToken cancellationToken)
     {
-        return Solve<T>(null);
+        return this.TrySolve<T>(out T? result, cancellationToken) ? result : default;
     }
 
     /// <summary>
-    /// Solves the theorem and, if requested, invokes <paramref name="inspect"/> with a witness evaluator
-    /// while the Z3 model and context are still alive (gap B5 of #4616). The evaluator translates an arbitrary
-    /// sub-expression over the theorem environment and evaluates it under the satisfying model — exposing the
-    /// model that <c>Solve&lt;T&gt;()</c> otherwise computes then discards. The witness is valid only for the
-    /// duration of the callback (the Z3 context is disposed when this method returns).
+    /// Solves the theorem using Z3, reporting satisfiability separately from the solution.
     /// </summary>
     /// <typeparam name="T">Theorem environment type.</typeparam>
-    /// <param name="inspect">Optional callback receiving a witness evaluator; not invoked on UNSAT.</param>
-    /// <returns>Result of solving the theorem; default(T) if the theorem cannot be satisfied.</returns>
-    protected T? Solve<T>(Action<ModelWitness<T>>? inspect)
+    /// <param name="result">The solution, when the theorem could be satisfied.</param>
+    /// <param name="cancellationToken">A token that interrupts the solve.</param>
+    /// <returns><see langword="true"/> if the theorem was satisfiable; otherwise <see langword="false"/>.</returns>
+    /// <exception cref="TheoremUndecidedException">Z3 stopped without deciding - a limit on the <see cref="Z3Context"/> was reached, or it gave up.</exception>
+    /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was cancelled.</exception>
+    protected bool TrySolve<T>([MaybeNullWhen(false)] out T result, CancellationToken cancellationToken)
     {
         using Context ctx = this.context.CreateContext();
         var environment = GetEnvironment(ctx, typeof(T));
 
-        Model? model;
+        // Solver solver = context.MkSimpleSolver();
+        Solver solver = ctx.MkSolver();
 
-        // Soft (weighted MaxSAT) constraints require an Optimize object: AssertSoft defines an implicit
-        // minimize-total-violated-weight objective with no explicit Maximize/Minimize term. A plain Solver
-        // cannot carry soft constraints, so route through the optimizer whenever any are present (B1, #4616).
-        if (softConstraints.Any())
+        AssertConstraints<T>(ctx, solver, environment);
+
+        Status status = this.Check(ctx, solver, cancellationToken);
+
+        if (status != Status.SATISFIABLE)
         {
-            Optimize softOptimizer = ctx.MkOptimize();
-            AssertConstraints<T>(ctx, softOptimizer, environment);
-            model = softOptimizer.Check() == Status.SATISFIABLE ? softOptimizer.Model : null;
-        }
-        else
-        {
-            // Solver selection is delegated to the context (SolverKind / Logic), backlog B10 (#4616).
-            // Previously hard-coded to ctx.MkSolver(); MkSimpleSolver() is now reachable via SolverKind.Simple.
-            Solver solver = this.context.CreateSolver(ctx);
-            AssertConstraints<T>(ctx, solver, environment);
-            model = solver.Check() == Status.SATISFIABLE ? solver.Model : null;
+            result = default;
+            return false;
         }
 
-        if (model == null)
-        {
-            return default;
-        }
-
-        // Witness inspection (B5): hand the caller an evaluator over the live model before disposing the
-        // context, so it can read back the model value of any sub-expression (not just the bound result type).
-        inspect?.Invoke(new ModelWitness<T>(ctx, model, environment));
-
-        return GetSolution<T>(ctx, model, environment);
+        result = GetSolution<T>(ctx, solver.Model, environment, this.template);
+        return true;
     }
 
     /// <summary>
-    /// Evaluates arbitrary sub-expressions over the theorem environment under a satisfying Z3 model
-    /// (witness generation, B5 of #4616). Handed to the caller by <see cref="Solve{T}(Action{ModelWitness{T}})"/>
-    /// while the model and context are alive. Reuses the same <see cref="ExpressionVisitor"/> + scalar-conversion
-    /// pipeline that <see cref="Solve{T}()"/> uses for the result type, so a witness value agrees with the
-    /// corresponding member of the returned solution object.
-    /// </summary>
-    /// <typeparam name="T">Theorem environment type.</typeparam>
-    public sealed class ModelWitness<T>
-    {
-        private readonly Context context;
-        private readonly Model model;
-        private readonly Environment environment;
-
-        internal ModelWitness(Context context, Model model, Environment environment)
-        {
-            this.context = context;
-            this.model = model;
-            this.environment = environment;
-        }
-
-        /// <summary>
-        /// Translates <paramref name="expression"/> to a Z3 expression and evaluates it under the model.
-        /// </summary>
-        /// <typeparam name="TResult">Scalar result type (int/long/bool/double/decimal/string/DateTime).</typeparam>
-        /// <param name="expression">A sub-expression over the theorem environment, e.g. <c>t =&gt; t.X + t.Y</c>.</param>
-        /// <returns>The value of the sub-expression under the satisfying model.</returns>
-        public TResult Eval<TResult>(Expression<Func<T, TResult>> expression)
-        {
-            var body = PartialEvaluator.PartialEval(expression.Body, ExpressionInterpreter.Instance);
-            Expr handle = ExpressionVisitor.Visit(context, environment, body, expression.Parameters[0]);
-            Expr value = model.Eval(handle, true);
-            return (TResult)ConvertScalarExpr(value, typeof(TResult), context, model, environment, ResultMember)!;
-        }
-    }
-
-    // Placeholder MemberInfo for witness scalar conversion error messages (no real member is being extracted).
-    private static readonly MemberInfo ResultMember = typeof(Theorem).GetMethod(nameof(ToString))!;
-
-    /// <summary>
-    /// Solves the theorem using Z3.
+    /// Finds an optimal solution using Z3.
     /// </summary>
     /// <typeparam name="T">Theorem environment type.</typeparam>
     /// <typeparam name="TResult">The Theorem Result.</typeparam>
-    /// <returns>Result of solving the theorem; default(T) if the theorem cannot be satisfied.</returns>
-    protected T Optimize<T, TResult>(Optimization direction, Expression<Func<T, TResult>> lambda)
+    /// <param name="direction">The optimization goal, i.e. whether to minimize or maximize the solution.</param>
+    /// <param name="lambda">Expression representing the value to minimize or maximize.</param>
+    /// <returns>Result of solving the theorem; <c>default(T)</c> if the theorem cannot be satisfied.</returns>
+    /// <param name="cancellationToken">A token that interrupts the optimisation.</param>
+    /// <remarks>
+    /// Carries the same ambiguity as <see cref="Solve{T}(CancellationToken)"/> for a value-type
+    /// environment. Use
+    /// <see cref="TryOptimize{T, TResult}(Optimization, Expression{Func{T, TResult}}, out T, CancellationToken)"/>
+    /// where that matters. See #57.
+    /// </remarks>
+    protected T? Optimize<T, TResult>(Optimization direction, Expression<Func<T, TResult>> lambda, CancellationToken cancellationToken)
+    {
+        return this.TryOptimize<T, TResult>(direction, lambda, out T? result, cancellationToken) ? result : default;
+    }
+
+    /// <summary>
+    /// Finds an optimal solution using Z3, reporting satisfiability separately from the solution.
+    /// </summary>
+    /// <typeparam name="T">Theorem environment type.</typeparam>
+    /// <typeparam name="TResult">The Theorem Result.</typeparam>
+    /// <param name="direction">The optimization goal, i.e. whether to minimize or maximize the solution.</param>
+    /// <param name="lambda">Expression representing the value to minimize or maximize.</param>
+    /// <param name="result">The optimal solution, when the theorem could be satisfied.</param>
+    /// <param name="cancellationToken">A token that interrupts the optimisation.</param>
+    /// <returns><see langword="true"/> if the theorem was satisfiable; otherwise <see langword="false"/>.</returns>
+    /// <exception cref="TheoremUndecidedException">Z3 stopped without deciding - a limit on the <see cref="Z3Context"/> was reached, or it gave up.</exception>
+    /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was cancelled.</exception>
+    protected bool TryOptimize<T, TResult>(
+        Optimization direction,
+        Expression<Func<T, TResult>> lambda,
+        [MaybeNullWhen(false)] out T result,
+        CancellationToken cancellationToken)
     {
         using Context ctx = this.context.CreateContext();
         var environment = GetEnvironment(ctx, typeof(T));
@@ -222,7 +184,7 @@ public class Theorem
 
         AssertConstraints<T>(ctx, optimizer, environment);
 
-        var expression = ExpressionVisitor.Visit(ctx, environment, lambda.Body, lambda.Parameters[0]);
+        var expression = ExpressionVisitor.Translate(ctx, environment, lambda.Body, lambda.Parameters[0]);
 
         switch (direction)
         {
@@ -236,14 +198,89 @@ public class Theorem
                 throw new ArgumentOutOfRangeException(nameof(direction), direction, null);
         }
 
-        Status status = optimizer.Check();
+        Status status = this.Check(ctx, optimizer, cancellationToken);
 
         if (status != Status.SATISFIABLE)
         {
-            return default!;
+            result = default;
+            return false;
         }
 
-        return GetSolution<T>(ctx, optimizer.Model, environment);
+        result = GetSolution<T>(ctx, optimizer.Model, environment, this.template);
+        return true;
+    }
+
+    /// <summary>
+    /// Runs the check on a solver or optimizer under the limits set on the <see cref="Z3Context"/>
+    /// and the caller's token, and turns an undecided outcome into an exception.
+    /// </summary>
+    /// <param name="ctx">The native context the check runs in.</param>
+    /// <param name="approach">The <see cref="Solver"/> or <see cref="Optimize"/> to check.</param>
+    /// <param name="cancellationToken">A token that interrupts the check.</param>
+    /// <returns><see cref="Status.SATISFIABLE"/> or <see cref="Status.UNSATISFIABLE"/> - never <see cref="Status.UNKNOWN"/>.</returns>
+    /// <remarks>
+    /// <para>
+    /// A cancelled token interrupts Z3 through <see cref="Context.Interrupt"/>. An interrupt that
+    /// arrives before the check has started is lost - measured, not assumed - so the token is
+    /// also inspected before the check, which leaves only the moment between that inspection and
+    /// Z3 starting work.
+    /// </para>
+    /// <para>
+    /// Z3 says why it stopped as a string, and the strings are not consistent: the solver says
+    /// <c>timeout</c> or <c>interrupted</c>, the optimizer says <c>canceled</c> for either, and an
+    /// exhausted resource limit is <c>canceled</c> on both. So cancellation is recognised from the
+    /// token rather than the string, and every other <see cref="Status.UNKNOWN"/> is a
+    /// <see cref="TheoremUndecidedException"/> carrying the string. Before #85 an
+    /// <see cref="Status.UNKNOWN"/> was reported as unsatisfiable, which was defensible only
+    /// because nothing could cause one.
+    /// </para>
+    /// </remarks>
+    private Status Check(Context ctx, Z3Object approach, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        // Disposed when this method returns, after the check has run: Params is native-backed, and
+        // the solver has copied what it needs by the time Check completes. A null (no limits set)
+        // is a no-op to dispose.
+        using Params? limits = this.context.CreateLimits(ctx);
+
+        switch (approach)
+        {
+            case Solver solver when limits is not null:
+                solver.Parameters = limits;
+                break;
+            case Optimize optimizer when limits is not null:
+                optimizer.Parameters = limits;
+                break;
+        }
+
+        Status status;
+
+        using (cancellationToken.Register(ctx.Interrupt))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            status = approach switch
+            {
+                Solver solver => solver.Check(),
+                Optimize optimizer => optimizer.Check(),
+                _ => throw new ArgumentException("Expected a Solver or an Optimize.", nameof(approach)),
+            };
+        }
+
+        if (status == Status.UNKNOWN)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            throw new TheoremUndecidedException(approach switch
+            {
+                Solver solver => solver.ReasonUnknown,
+                Optimize optimizer => optimizer.ReasonUnknown,
+                _ => "unknown",
+            });
+        }
+
+        return status;
     }
 
     /// <summary>
@@ -255,162 +292,284 @@ public class Theorem
     /// <typeparam name="T">Theorem environment type.</typeparam>
     private void AssertConstraints<T>(Context context, Z3Object approach, Environment environment)
     {
-        var constraintsToAssert = GetConstraintsToAssert<T>();
+        var constraintsToAssert = this.constraints;
+
+        // Global rewriter registered? IsDefined answers without allocating, so the common
+        // no-rewriter case pays nothing; the attribute itself is read only when one is present.
+        if (typeof(T).IsDefined(typeof(TheoremGlobalRewriterAttribute), false))
+        {
+            var rewriterAttr = typeof(T).GetCustomAttributes<TheoremGlobalRewriterAttribute>(false).Single();
+
+            // Make sure the specified rewriter type implements the ITheoremGlobalRewriter.
+            var rewriterType = rewriterAttr.RewriterType;
+
+            if (!typeof(ITheoremGlobalRewriter).IsAssignableFrom(rewriterType))
+            {
+                throw new InvalidOperationException("Invalid global rewriter type definition. Did you implement ITheoremGlobalRewriter?");
+            }
+
+            // Assume a parameterless public constructor to new up the rewriter.
+            var rewriter = (ITheoremGlobalRewriter)Activator.CreateInstance(rewriterType)!;
+
+            // Do the rewrite.
+            constraintsToAssert = rewriter.Rewrite(constraintsToAssert);
+        }
 
         // Visit, assert and log.
         foreach (var constraint in constraintsToAssert)
         {
-            // Partially evaluate the constraint body before visiting. This folds host-captured
-            // constants (locals declared outside the theorem's parameter scope, e.g. in another
-            // .NET Interactive "submission" or closure) into literal ConstantExpressions, which
-            // sidesteps the reflective MemberExpression resolution in ExpressionVisitor.VisitMember
-            // that crashes across dynamic-assembly boundaries -- see issue #2:
-            // "Field 'X' defined on type 'Submission#N' is not a field on the target object of
-            // type 'Submission#M'". Subtrees that reference the theorem parameter (e.g. t.Values[i])
-            // are left untouched because they are not evaluable without a parameter binding.
-            var body = PartialEvaluator.PartialEval(constraint.Body, ExpressionInterpreter.Instance);
-            BoolExpr expression = (BoolExpr)ExpressionVisitor.Visit(context, environment, body, constraint.Parameters[0]);
+            BoolExpr expression = (BoolExpr)ExpressionVisitor.Translate(context, environment, constraint.Body, constraint.Parameters[0]);
 
-            switch (approach)
-            {
-                case Solver solver:
-                    solver.Assert(expression);
-                    break;
-                case Optimize optimize:
-                    optimize.Assert(expression);
-                    break;
-            }
+            Assert(approach, expression);
 
             this.context.LogWriteLine(expression.ToString());
         }
 
-        // Soft (weighted MaxSAT) constraints: only an Optimize object can carry them. Each is asserted
-        // with its weight and group, so Z3 minimizes the total weight of the soft constraints it leaves
-        // unsatisfied (B1, #4616). A plain Solver silently ignores them — but Solve<T>() routes through the
-        // optimizer whenever any soft constraint exists, so the Solver branch is only ever reached with none.
-        if (approach is Optimize softOptimize)
-        {
-            foreach (var soft in softConstraints)
-            {
-                var softBody = PartialEvaluator.PartialEval(soft.Constraint.Body, ExpressionInterpreter.Instance);
-                BoolExpr softExpr = (BoolExpr)ExpressionVisitor.Visit(context, environment, softBody, soft.Constraint.Parameters[0]);
-
-                softOptimize.AssertSoft(softExpr, (uint)soft.Weight, soft.Group);
-                this.context.LogWriteLine($"[soft w={soft.Weight} g={soft.Group}] {softExpr}");
-            }
-        }
+        AssertBounds(context, approach, environment);
     }
 
     /// <summary>
-    /// Resolves the hard constraints to assert, applying a registered <see cref="TheoremGlobalRewriterAttribute"/>
-    /// if present. Shared by <see cref="AssertConstraints{T}"/> (solve path) and <see cref="Explain{T}"/>
-    /// (diagnostic path, B6).
+    /// Asserts a Boolean term into the <see cref="Solver"/> or <see cref="Optimize"/> the theorem
+    /// is being checked with - the one dispatch on the two forms a <see cref="Z3Object"/> approach
+    /// can take.
     /// </summary>
-    private IEnumerable<LambdaExpression> GetConstraintsToAssert<T>()
+    /// <param name="approach">The <see cref="Solver"/> or <see cref="Optimize"/> to assert into.</param>
+    /// <param name="expression">The Boolean term to assert.</param>
+    private static void Assert(Z3Object approach, BoolExpr expression)
     {
-        // Global rewriter registered?
-        var rewriterAttr = typeof(T).GetCustomAttributes<TheoremGlobalRewriterAttribute>(false).SingleOrDefault();
-
-        if (rewriterAttr == null)
+        switch (approach)
         {
-            return this.constraints;
+            case Solver solver:
+                solver.Assert(expression);
+                break;
+            case Optimize optimize:
+                optimize.Assert(expression);
+                break;
         }
-
-        // Make sure the specified rewriter type implements the ITheoremGlobalRewriter.
-        var rewriterType = rewriterAttr.RewriterType;
-
-        if (!typeof(ITheoremGlobalRewriter).IsAssignableFrom(rewriterType))
-        {
-            throw new InvalidOperationException("Invalid global rewriter type definition. Did you implement ITheoremGlobalRewriter?");
-        }
-
-        // Assume a parameterless public constructor to new up the rewriter.
-        var rewriter = (ITheoremGlobalRewriter)Activator.CreateInstance(rewriterType)!;
-
-        // Do the rewrite.
-        return rewriter.Rewrite(this.constraints);
     }
 
     /// <summary>
-    /// Diagnoses the theorem's satisfiability without extracting a solution object (gap B6 of #4616). Unlike
-    /// <see cref="Solve{T}()"/> — which collapses every non-SAT outcome to <c>default</c> — this distinguishes
-    /// <see cref="SolveStatus.Satisfiable"/>, <see cref="SolveStatus.Unsatisfiable"/> and
-    /// <see cref="SolveStatus.Unknown"/>, and on UNSAT returns the minimal <b>UNSAT core</b>: the subset of the
-    /// hard <c>.Where</c> constraints (by their original 0-based index and source expression) that are jointly
-    /// unsatisfiable. Each constraint is asserted under a fresh tracking literal so Z3 can report which ones
-    /// participate in the conflict.
+    /// Asserts, for every scalar symbol whose CLR type is a bounded integer, that the symbol lies
+    /// within the range of that type.
+    /// </summary>
+    /// <param name="context">Z3 context.</param>
+    /// <param name="approach">The <see cref="Solver"/> or <see cref="Optimize"/> to assert into.</param>
+    /// <param name="environment">Environment with bindings of theorem variables to Z3 handles.</param>
+    /// <remarks>
+    /// <para>
+    /// A <c>short</c>, <c>int</c>, <c>long</c> or <see cref="DateTime"/> symbol is an unbounded
+    /// Z3 integer, so without this a constraint no value of the type can satisfy - a
+    /// <c>short</c> equal to 40000, a <see cref="DateTime"/> after <see cref="DateTime.MaxValue"/>
+    /// - still had a model, and the read back then failed. With it the theorem is unsatisfiable,
+    /// which is the true answer, and an optimisation with no other bound on the symbol returns
+    /// the extreme of the type rather than whatever Z3 happened to pick. See #87.
+    /// </para>
+    /// <para>
+    /// Only scalars are bounded. A collection is an array from <c>Int</c> to the element sort,
+    /// its length is not known here - it comes from the instance when the solution is read - and
+    /// bounding every element would take a quantifier, which can cost Z3 its completeness. So an
+    /// element is read with a checked conversion instead, and a value outside its type is loud
+    /// rather than wrong.
+    /// </para>
+    /// <para>
+    /// The bounds are not logged: the log shows the constraints the caller wrote.
+    /// </para>
+    /// </remarks>
+    private static void AssertBounds(Context context, Z3Object approach, Environment environment)
+    {
+        foreach ((MemberInfo member, Environment child) in environment.Properties)
+        {
+            if (child.Expr is IntExpr symbol && GetBounds(Type.GetTypeCode(SymbolType(member))) is (long low, long high))
+            {
+                BoolExpr bounds = context.MkAnd(
+                    context.MkGe(symbol, context.MkInt(low)),
+                    context.MkLe(symbol, context.MkInt(high)));
+
+                Assert(approach, bounds);
+            }
+
+            AssertBounds(context, approach, child);
+        }
+    }
+
+    /// <summary>
+    /// The range of values a CLR type can hold, for the types that travel through Z3 as an
+    /// integer, or <see langword="null"/> for a type with no such range.
+    /// </summary>
+    /// <param name="typeCode">The type code of the CLR type.</param>
+    /// <returns>The inclusive range, or <see langword="null"/>.</returns>
+    /// <remarks>
+    /// A <see cref="DateTime"/> is its ticks (#83), so its range is
+    /// <see cref="DateTime.MinValue"/> to <see cref="DateTime.MaxValue"/> in ticks.
+    /// </remarks>
+    private static (long Low, long High)? GetBounds(TypeCode typeCode)
+    {
+        return typeCode switch
+        {
+            TypeCode.SByte => (sbyte.MinValue, sbyte.MaxValue),
+            TypeCode.Byte => (byte.MinValue, byte.MaxValue),
+            TypeCode.Int16 => (short.MinValue, short.MaxValue),
+            TypeCode.UInt16 => (ushort.MinValue, ushort.MaxValue),
+            TypeCode.Int32 => (int.MinValue, int.MaxValue),
+            TypeCode.Int64 => (long.MinValue, long.MaxValue),
+            TypeCode.DateTime => (DateTime.MinValue.Ticks, DateTime.MaxValue.Ticks),
+            _ => null,
+        };
+    }
+
+    /// <summary>
+    /// The CLR type a member is solved as: its declared type, or the type a
+    /// <see cref="TheoremVariableTypeMappingAttribute"/> on that type maps it to.
+    /// </summary>
+    /// <param name="member">The property or field.</param>
+    /// <returns>The type the symbol is declared and read as.</returns>
+    private static Type SymbolType(MemberInfo member)
+    {
+        Type type = MemberClrType(member);
+
+        return GetTypeMapping(type)?.RegularType ?? type;
+    }
+
+    /// <summary>
+    /// The declared CLR type of a property or field.
+    /// </summary>
+    /// <param name="member">The property or field.</param>
+    /// <returns>The member's <see cref="PropertyInfo.PropertyType"/> or <see cref="FieldInfo.FieldType"/>.</returns>
+    private static Type MemberClrType(MemberInfo member)
+    {
+        return member switch
+        {
+            PropertyInfo property => property.PropertyType,
+            FieldInfo field => field.FieldType,
+            _ => throw new NotSupportedException(),
+        };
+    }
+
+    /// <summary>
+    /// The <see cref="TheoremVariableTypeMappingAttribute"/> declared on a type, cached across
+    /// solves.
     /// </summary>
     /// <remarks>
-    /// Soft (MaxSAT) constraints are intentionally ignored here: they never cause UNSAT (they are sacrificed
-    /// instead), so the diagnostic concerns only the hard constraints. <see cref="Solve{T}()"/> is left
-    /// completely unchanged — B6 adds a parallel diagnostic surface rather than altering the solve contract.
+    /// The environment builder, the bounds asserter and the marshaller each ask this of the same
+    /// member types on every solve, and the answer is fixed for the life of the type. Caching it
+    /// turns the common no-mapping case - the great majority of members - from a reflection call
+    /// and an array allocation per member per solve into a dictionary lookup. A type with no
+    /// mapping caches a null, so absence is cached as cheaply as presence.
     /// </remarks>
-    /// <typeparam name="T">Theorem environment type.</typeparam>
-    /// <returns>An <see cref="Explanation"/> describing the status and, on UNSAT, the conflicting constraints.</returns>
-    protected Explanation Explain<T>()
+    private static readonly ConcurrentDictionary<Type, TheoremVariableTypeMappingAttribute?> TypeMappings = new();
+
+    /// <summary>
+    /// The <see cref="TheoremVariableTypeMappingAttribute"/> declared on <paramref name="type"/>,
+    /// or <see langword="null"/> if it has none.
+    /// </summary>
+    /// <param name="type">The CLR type to read the mapping from.</param>
+    /// <returns>The mapping attribute, or <see langword="null"/>.</returns>
+    private static TheoremVariableTypeMappingAttribute? GetTypeMapping(Type type)
     {
-        using Context ctx = this.context.CreateContext();
-        var environment = GetEnvironment(ctx, typeof(T));
+        return TypeMappings.GetOrAdd(
+            type,
+            static t => t.GetCustomAttributes<TheoremVariableTypeMappingAttribute>(false).SingleOrDefault());
+    }
 
-        // Deliberately uses the general-purpose combined solver (ctx.MkSolver()) and does NOT
-        // honor Z3Context.SolverKind/Tactics. UNSAT-core extraction relies on AssertAndTrack +
-        // Solver.UnsatCore, i.e. hypothesis tracking; MkSimpleSolver() and solvers built from a
-        // tactic that lacks an incremental core-extraction backend silently return an empty or
-        // partial core (a correctness regression, not a performance one). The combined solver is
-        // the one Z3 backend that guarantees UnsatCore support, so the diagnostic path is pinned
-        // to it regardless of the context's solving configuration. Solve<T>() (which only needs a
-        // model, not a core) is free to honor SolverKind/Tactics. See Z3Context.CreateSolver.
-        Solver solver = ctx.MkSolver();
+    /// <summary>
+    /// The public instance properties of a type, cached across solves.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="Type.GetProperties(BindingFlags)"/> hands back a fresh array on every call, so
+    /// the environment builder allocated one per type on every solve to walk the same fixed set of
+    /// members. The cached array is only ever read, never mutated, so sharing one instance is safe.
+    /// </remarks>
+    private static readonly ConcurrentDictionary<Type, PropertyInfo[]> PublicInstanceProperties = new();
 
-        var constraintList = GetConstraintsToAssert<T>().ToList();
-        var trackerToConstraint = new Dictionary<string, ConstraintRef>(constraintList.Count);
+    /// <summary>
+    /// The public instance fields of a type, cached across solves, for the same reason as
+    /// <see cref="PublicInstanceProperties"/>.
+    /// </summary>
+    private static readonly ConcurrentDictionary<Type, FieldInfo[]> PublicInstanceFields = new();
 
-        for (int i = 0; i < constraintList.Count; i++)
+    /// <summary>Gets the cached public instance properties of <paramref name="type"/>.</summary>
+    private static PropertyInfo[] GetPublicInstanceProperties(Type type)
+    {
+        return PublicInstanceProperties.GetOrAdd(type, static t => t.GetProperties(BindingFlags.Public | BindingFlags.Instance));
+    }
+
+    /// <summary>Gets the cached public instance fields of <paramref name="type"/>.</summary>
+    private static FieldInfo[] GetPublicInstanceFields(Type type)
+    {
+        return PublicInstanceFields.GetOrAdd(type, static t => t.GetFields(BindingFlags.Public | BindingFlags.Instance));
+    }
+
+    /// <summary>
+    /// Gets the Z3 sort a symbol of the given CLR type is declared with, or <see langword="null"/>
+    /// if the type is not one the library maps.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is the only mapping from CLR type to sort. A scalar symbol is a constant of this sort,
+    /// and a collection symbol is a Z3 array from <c>Int</c> to it, so the two cannot disagree -
+    /// there is nothing else to consult. Collections used to carry a mapping of their own, and
+    /// only its <c>int</c> row agreed with this one; every other element type declared a domain or
+    /// range that contradicted how its elements were constrained and read back. See #64.
+    /// </para>
+    /// <para>
+    /// <see cref="ExpressionVisitor"/> asks the same question when a constraint converts between
+    /// CLR types: whether the conversion is a no-op, an integer-to-real, or a real-to-integer
+    /// depends only on the sorts the two types map to here. See #76.
+    /// </para>
+    /// </remarks>
+    internal static Sort? TryGetSymbolSort(Context context, TypeCode typeCode)
+    {
+        return typeCode switch
         {
-            var constraint = constraintList[i];
-            var body = PartialEvaluator.PartialEval(constraint.Body, ExpressionInterpreter.Instance);
-            BoolExpr expression = (BoolExpr)ExpressionVisitor.Visit(ctx, environment, body, constraint.Parameters[0]);
+            TypeCode.String => context.StringSort,
+            TypeCode.SByte or TypeCode.Byte or TypeCode.Int16 or TypeCode.UInt16 or TypeCode.Int32 or TypeCode.Int64 or TypeCode.DateTime => context.IntSort,
+            TypeCode.Boolean => context.BoolSort,
+            TypeCode.Single or TypeCode.Decimal or TypeCode.Double => context.RealSort,
+            TypeCode.UInt32 or TypeCode.UInt64 => context.MkBitVecSort(BitVectorWidth(typeCode)!.Value),
+            _ => null,
+        };
+    }
 
-            // A fresh boolean tracking literal per constraint: AssertAndTrack ties the constraint to it, so a
-            // returned UnsatCore lists exactly the trackers (hence constraints) that participate in the conflict.
-            string trackerName = $"__track_{i}";
-            BoolExpr tracker = ctx.MkBoolConst(trackerName);
-            trackerToConstraint[trackerName] = new ConstraintRef(i, constraint.Body.ToString());
-            solver.AssertAndTrack(expression, tracker);
-        }
-
-        Status status = solver.Check();
-
-        switch (status)
+    /// <summary>
+    /// The width, in bits, of the Z3 bit-vector a fixed-width unsigned CLR type maps to, or
+    /// <see langword="null"/> for a type that is not a bit-vector.
+    /// </summary>
+    /// <param name="typeCode">The type code of the CLR type.</param>
+    /// <returns>The bit width, or <see langword="null"/>.</returns>
+    /// <remarks>
+    /// <para>
+    /// <c>uint</c> and <c>ulong</c> travel through Z3 as bit-vectors of their width - so they
+    /// carry wrapping arithmetic, bitwise operators and shifts, which a mathematical integer has
+    /// no counterpart for.
+    /// </para>
+    /// <para>
+    /// <c>byte</c>, <c>sbyte</c> and <c>ushort</c> are not bit-vectors: C# promotes them to
+    /// <c>int</c> in every expression, so such a symbol could never keep a bit-vector sort through
+    /// a constraint. They map to the integer sort instead, bounded to their range like
+    /// <c>short</c> - so they support equality, ordering and arithmetic but not bitwise operators,
+    /// which need one of the bit-vector types above.
+    /// </para>
+    /// </remarks>
+    internal static uint? BitVectorWidth(TypeCode typeCode)
+    {
+        return typeCode switch
         {
-            case Status.SATISFIABLE:
-                return new Explanation(SolveStatus.Satisfiable, Array.Empty<ConstraintRef>());
-
-            case Status.UNKNOWN:
-                return new Explanation(SolveStatus.Unknown, Array.Empty<ConstraintRef>());
-
-            default:
-                var core = solver.UnsatCore
-                    .Select(tracker => trackerToConstraint.TryGetValue(tracker.ToString(), out var cref) ? cref : (ConstraintRef?)null)
-                    .Where(cref => cref.HasValue)
-                    .Select(cref => cref!.Value)
-                    .OrderBy(cref => cref.Index)
-                    .ToArray();
-
-                return new Explanation(SolveStatus.Unsatisfiable, core);
-        }
+            TypeCode.UInt32 => 32,
+            TypeCode.UInt64 => 64,
+            _ => null,
+        };
     }
 
     private Environment GetEnvironment(Context context, Type targetType)
     {
-        return GetEnvironment(context, targetType, targetType.Name, false);
+        return GetEnvironment(context, targetType, targetType.Name);
     }
 
-    private Environment GetEnvironment(Context context, Type targetType, string prefix, bool isArray)
+    private Environment GetEnvironment(Context context, Type targetType, string prefix)
     {
         var toReturn = new Environment();
 
-        if (isArray || targetType.IsArray || (targetType.IsGenericType && typeof(IEnumerable).IsAssignableFrom(targetType.GetGenericTypeDefinition())))
+        if (IsCollection(targetType))
         {
             Type? elType;
 
@@ -423,98 +582,38 @@ public class Theorem
                 elType = targetType.GetGenericArguments()[0];
             }
 
-            // Constants mode: one Z3 constant per element, lazily created on index access.
-            // The element sub-environments are materialized by the expression visitor when an
-            // ArrayIndex node is encountered (see ExpressionVisitor.ResolveArrayElement).
-            if (DefaultCollectionHandling == CollectionHandling.Constants)
+            TypeCode elTypeCode = Type.GetTypeCode(elType);
+
+            if (elTypeCode == TypeCode.Object)
             {
-                return new MultipleEnvironment(prefix, elType!);
-            }
+                toReturn.IsArray = true;
 
-            switch (Type.GetTypeCode(elType))
-            {
-                case TypeCode.String:
-                case TypeCode.Int16:
-                case TypeCode.Int32:
-                case TypeCode.Int64:
-                case TypeCode.DateTime:
-                case TypeCode.Boolean:
-                case TypeCode.Single:
-                case TypeCode.Decimal:
-                case TypeCode.Double:
+                foreach (PropertyInfo parameter in GetPublicInstanceProperties(elType!))
                 {
-                    // Simple scalar array: create Z3 array with appropriate sorts
-                    Sort arrDomain = GetArrayDomainSort(context, elType!);
-                    Sort arrRange = GetArrayRangeSort(context, elType!);
-                    toReturn.Expr = context.MkArrayConst(prefix, arrDomain, arrRange);
-                    break;
-                }
-                case TypeCode.Object:
-                {
-                    // Nested array (e.g. int[][]) or collection of complex objects
-                    if (elType!.IsArray || (elType.IsGenericType && typeof(IEnumerable).IsAssignableFrom(elType.GetGenericTypeDefinition())))
+                    var newPrefix = parameter.Name;
+
+                    if (!string.IsNullOrEmpty(prefix))
                     {
-                        // Nested array: create an array whose range sort is the inner array sort.
-                        // Recursively compute the inner array environment to get its sort.
-                        var innerEnv = GetEnvironment(context, elType, prefix, true);
-                        toReturn.Expr = context.MkArrayConst(prefix, context.IntSort, ((ArrayExpr)innerEnv.Expr!).Sort);
-                        toReturn.IsArray = true;
-                        toReturn.Properties[typeof(Array)] = innerEnv;
-                    }
-                    else
-                    {
-                        // Collection of complex objects (e.g. List<MyObject>)
-                        toReturn.IsArray = true;
-
-                        foreach (PropertyInfo parameter in elType!.GetProperties(BindingFlags.Public | BindingFlags.Instance))
-                        {
-                            var newPrefix = parameter.Name;
-
-                            if (!string.IsNullOrEmpty(prefix))
-                            {
-                                newPrefix = $"{prefix}_{newPrefix}";
-                            }
-
-                            toReturn.Properties[parameter] = GetEnvironment(context, parameter, newPrefix, true);
-                        }
+                        newPrefix = $"{prefix}_{newPrefix}";
                     }
 
-                    return toReturn;
+                    toReturn.Properties[parameter] = GetEnvironment(context, parameter, newPrefix, true);
                 }
-                default:
-                    throw new NotSupportedException($"Unsupported member type {targetType.FullName}");
+
+                return toReturn;
             }
+
+            // Elements are always read back with an integer index - ConvertZ3Expression selects
+            // with MkInt(i) - so the domain is Int whatever the element type. The range is the
+            // sort a scalar of that type would get, from the one mapping both share. See #64.
+            Sort elementSort = TryGetSymbolSort(context, elTypeCode)
+                ?? throw new NotSupportedException($"Unsupported member type {targetType.FullName}");
+
+            toReturn.Expr = context.MkArrayConst(prefix, context.IntSort, elementSort);
         }
         else
         {
-            // Scalar leaf type: create a Z3 constant
-            switch (Type.GetTypeCode(targetType))
-            {
-                case TypeCode.String:
-                    toReturn.Expr = context.MkConst(prefix, context.StringSort);
-                    return toReturn;
-                case TypeCode.Int16:
-                case TypeCode.Int32:
-                case TypeCode.Int64:
-                case TypeCode.DateTime:
-                    toReturn.Expr = context.MkIntConst(prefix);
-                    return toReturn;
-                case TypeCode.Boolean:
-                    toReturn.Expr = context.MkBoolConst(prefix);
-                    return toReturn;
-                case TypeCode.Single:
-                case TypeCode.Decimal:
-                case TypeCode.Double:
-                    toReturn.Expr = context.MkRealConst(prefix);
-                    return toReturn;
-                case TypeCode.Object:
-                    // Complex object: recurse into its properties/fields
-                    break;
-                default:
-                    throw new NotSupportedException($"Unsupported parameter type for {prefix} ({targetType.FullName}).");
-            }
-
-            foreach (var parameter in targetType.GetProperties(BindingFlags.Public | BindingFlags.Instance))
+            foreach (var parameter in GetPublicInstanceProperties(targetType))
             {
                 var newPrefix = parameter.Name;
                 if (!string.IsNullOrEmpty(prefix))
@@ -525,7 +624,7 @@ public class Theorem
                 toReturn.Properties[parameter] = GetEnvironment(context, parameter, newPrefix, false);
             }
 
-            foreach (var parameter in targetType.GetFields(BindingFlags.Public | BindingFlags.Instance))
+            foreach (var parameter in GetPublicInstanceFields(targetType))
             {
                 var newPrefix = parameter.Name;
                 if (!string.IsNullOrEmpty(prefix))
@@ -542,106 +641,104 @@ public class Theorem
 
     private Environment GetEnvironment(Context context, MemberInfo parameter, string prefix, bool isArray)
     {
-        var parameterType = parameter switch
-        {
-            PropertyInfo parameterProperty => parameterProperty.PropertyType,
-            FieldInfo parameterField => parameterField.FieldType,
-            _ => throw new NotSupportedException(),
-        };
+        var toReturn = new Environment();
 
-        // Bit-vector variables (B4, #4616) are an integral scalar leaf bound to a Z3 bit-vector constant of
-        // the declared width, rather than to a mathematical integer. Intercept here, before the type-based
-        // overload, since the CLR type is still int/long: the width lives on the member attribute, not the type.
-        BitVecWidthAttribute? bitVecWidth = parameter.GetCustomAttributes<BitVecWidthAttribute>(false).SingleOrDefault();
+        var parameterType = MemberClrType(parameter);
 
-        if (bitVecWidth != null && !isArray)
+        parameterType = GetTypeMapping(parameterType)?.RegularType ?? parameterType;
+
+        // Map the environment onto Z3-compatible types.
+        Expr constrExp;
+        if (!isArray)
         {
-            return new Environment { Expr = context.MkBVConst(prefix, bitVecWidth.Width) };
+            // To deal correctly with nested properties, we can't just use the property name.
+            // That breaks with ValueTuples with arity of 8 or higher because those have
+            // both x.Item1 and x.Rest.Item1, and if we call both of those "Item1" they become
+            // indistinguishable. Using the prefix means those become ValueTuple`8_Item1 and
+            // ValueTuple`8_Rest_Item1.
+            string name = prefix;
+            TypeCode typeCode = Type.GetTypeCode(parameterType);
+
+            if (typeCode == TypeCode.Object)
+            {
+                return GetEnvironment(context, parameterType, prefix);
+            }
+
+            Sort sort = TryGetSymbolSort(context, typeCode)
+                ?? throw new NotSupportedException("Unsupported parameter type for " + name + ".");
+
+            constrExp = context.MkConst(name, sort);
+        }
+        else
+        {
+            // One Z3 array per property of the element type, indexed by position. Domain and
+            // range are chosen exactly as for a collection of the property type. See #64.
+            Sort elementSort = TryGetSymbolSort(context, Type.GetTypeCode(parameterType))
+                ?? throw new NotSupportedException($"Only one level of object collections is currently supported, 2 levels detected with prefix {prefix}");
+
+            constrExp = context.MkArrayConst(prefix, context.IntSort, elementSort);
         }
 
-        TheoremVariableTypeMappingAttribute? parameterTypeMapping = parameterType.GetCustomAttributes<TheoremVariableTypeMappingAttribute>(false).SingleOrDefault();
+        toReturn.Expr = constrExp;
 
-        if (parameterTypeMapping != null)
-        {
-            parameterType = parameterTypeMapping.RegularType;
-        }
-
-        // Delegate to the Type-based overload
-        return GetEnvironment(context, parameterType, prefix, isArray);
+        return toReturn;
     }
 
-    /// <summary>
-    /// Gets the Z3 domain sort for an array element type (used as the index sort).
-    /// </summary>
-    private static Sort GetArrayDomainSort(Context context, Type elementType)
-    {
-        // Arrays are indexed by integers in Z3
-        return context.IntSort;
-    }
-
-    /// <summary>
-    /// Gets the Z3 range sort for a scalar element type.
-    /// </summary>
-    private static Sort GetArrayRangeSort(Context context, Type elementType)
-    {
-        switch (Type.GetTypeCode(elementType))
-        {
-            case TypeCode.String:
-                return context.StringSort;
-            case TypeCode.Int16:
-            case TypeCode.Int32:
-            case TypeCode.Int64:
-            case TypeCode.DateTime:
-                return context.IntSort;
-            case TypeCode.Boolean:
-                return context.BoolSort;
-            case TypeCode.Single:
-            case TypeCode.Decimal:
-            case TypeCode.Double:
-                return context.RealSort;
-            default:
-                throw new NotSupportedException($"Unsupported array element type {elementType.FullName}");
-        }
-    }
-
-    private static object ConvertZ3Expression(object destinationObject, Context context, Model model, Environment subEnv, MemberInfo parameter)
+    private static object ConvertZ3Expression(object destinationObject, Context context, Model model, Environment subEnv, MemberInfo parameter, object? templateValue)
     {
         // Normalize types when facing Z3. Theorem variable type mappings allow for strong
         // typing within the theorem, while underlying variable representations are Z3-
         // friendly types.
-        var parameterType = parameter switch
-        {
-            PropertyInfo parameterProperty => parameterProperty.PropertyType,
-            FieldInfo parameterField => parameterField.FieldType,
-            _ => throw new NotSupportedException(),
-        };
+        var parameterType = MemberClrType(parameter);
 
-        TheoremVariableTypeMappingAttribute? parameterTypeMapping = parameterType.GetCustomAttributes<TheoremVariableTypeMappingAttribute>(false).SingleOrDefault();
-
-        if (parameterTypeMapping != null)
-        {
-            parameterType = parameterTypeMapping.RegularType;
-        }
+        TheoremVariableTypeMappingAttribute? parameterTypeMapping = GetTypeMapping(parameterType);
+        parameterType = parameterTypeMapping?.RegularType ?? parameterType;
 
         object value;
         TypeCode typeCode = Type.GetTypeCode(parameterType);
         if (typeCode == TypeCode.Object)
         {
-            if (parameterType.IsArray || (parameterType.IsGenericType && typeof(IEnumerable).IsAssignableFrom(parameterType.GetGenericTypeDefinition())))
+            if (IsCollection(parameterType))
             {
-                // Delegate to ExtractCollection for both simple and nested array extraction
-                object? existingMember = parameter switch
-                {
-                    PropertyInfo info => info.GetValue(destinationObject, null),
-                    FieldInfo info1 => info1.GetValue(destinationObject),
-                    _ => null
-                };
+                Type eltType = (parameterType.IsArray ? parameterType.GetElementType() : parameterType.GetGenericArguments()[0])
+                    ?? throw new NotSupportedException("Unsupported untyped array parameter type for " + parameter.Name + ".");
 
-                value = ExtractCollection(existingMember, context, model, subEnv, parameter, parameterType);
+                var arrVal = (ArrayExpr)(subEnv.Expr ?? throw new ArgumentException(
+                    $"nameof(ConvertZ3Expression) requires {nameof(subEnv)}.{nameof(subEnv.Expr)} to be non-null",
+                    nameof(subEnv)));
+
+                // A solution never changes the length of a collection, so the length has to come
+                // from somewhere: the collection on the template passed to NewTheorem, or failing
+                // that the one already on the instance - its initialiser. A value tuple has nowhere
+                // to put an initialiser and an anonymous instance is created uninitialised, so for
+                // those the template is the only source. With neither, say so by name rather than
+                // fail on the null. See #53 and #78.
+                if ((templateValue ?? GetMemberValue(parameter, destinationObject)) is not ICollection existing)
+                {
+                    throw new NotSupportedException(
+                        $"Collection symbol {parameter.Name} has no length. A collection must be pre-sized: initialise it on the environment type, or pass an instance with it initialised to NewTheorem.");
+                }
+
+                int existingLength = existing.Count;
+
+                // Fill a typed array in place, rather than an ArrayList that keeps a boxed object[]
+                // backing store and is then copied into a typed array by ToArray. The element values
+                // are still boxed to pass through SetValue, as they were to pass through Add.
+                Array results = Array.CreateInstance(eltType, existingLength);
+
+                TypeCode eltTypeCode = Type.GetTypeCode(eltType);
+
+                for (int i = 0; i < existingLength; i++)
+                {
+                    var numValExpr = EvaluateWithCompletion(model, context.MkSelect(arrVal, context.MkInt(i)));
+                    results.SetValue(ReadZ3Value(numValExpr, eltTypeCode, parameter.Name, eltType), i);
+                }
+
+                value = parameterType.IsArray ? results : Activator.CreateInstance(parameterType, results)!;
             }
             else
             {
-                value = GetSolution(parameterType, context, model, subEnv);
+                value = GetSolution(parameterType, context, model, subEnv, templateValue);
             }
         }
         else
@@ -650,53 +747,8 @@ public class Theorem
                 $"nameof(ConvertZ3Expression) requires {nameof(subEnv)}.{nameof(subEnv.Expr)} to be non-null",
                 nameof(subEnv));
 
-            Expr val = model.Eval(subEnvExpr);
-
-            switch (typeCode)
-            {
-                case TypeCode.String:
-                    value = val.String;
-                    break;
-                case TypeCode.Int16:
-                case TypeCode.Int32:
-                    value = ReadIntegral(val, asInt64: false);
-                    break;
-                case TypeCode.Int64:
-                    value = ReadIntegral(val, asInt64: true);
-                    break;
-                case TypeCode.DateTime:
-                    // Ticks on the UTC timeline (ExpressionVisitor.ToUtcTicks), so the value is
-                    // read back as UTC from the same ticks. It used to be a Windows file time,
-                    // read with FromFileTime - local time, which shifted the value by the
-                    // machine's UTC offset and made the same theorem answer differently on
-                    // different machines (endjin #56, #14445 defect 2).
-                    value = ToDateTime(((IntNum)val).Int64, parameter.Name);
-                    break;
-                case TypeCode.Boolean:
-                    value = val.IsTrue;
-                    break;
-                case TypeCode.Single:
-                    value = ParseRatNumAsDouble((RatNum)val, 32);
-                    break;
-                case TypeCode.Decimal:
-
-                    string decValue = ((RatNum)val).ToDecimalString(128);
-
-                    ReadOnlySpan<char> decValueSpan = decValue.AsSpan();
-                    if (decValue.EndsWith('?'))
-                    {
-                        decValueSpan = decValueSpan[..^1];
-                    }
-
-                    value = decimal.Parse(decValueSpan, NumberStyles.Number, CultureInfo.InvariantCulture);
-                    break;
-                case TypeCode.Double:
-                    value = ParseRatNumAsDouble((RatNum)val, 64);
-                    break;
-
-                default:
-                    throw new NotSupportedException("Unsupported parameter type for " + parameter.Name + ".");
-            }
+            Expr val = EvaluateWithCompletion(model, subEnvExpr);
+            value = ReadZ3Value(val, typeCode, parameter.Name, null);
         }
 
         // If there was a type mapping, we need to convert back to the original type.
@@ -705,25 +757,17 @@ public class Theorem
         {
             if (parameter is PropertyInfo propertyInfo)
             {
-                var ctor = propertyInfo.PropertyType.GetConstructor(new Type[] { parameterType });
+                var ctor = propertyInfo.PropertyType.GetConstructor([parameterType])
+                    ?? throw new InvalidOperationException("Could not construct an instance of the mapped type " + propertyInfo.PropertyType.Name + ". No public constructor with parameter type " + parameterType + " found.");
 
-                if (ctor == null)
-                {
-                    throw new InvalidOperationException("Could not construct an instance of the mapped type " + propertyInfo.PropertyType.Name + ". No public constructor with parameter type " + parameterType + " found.");
-                }
-
-                value = ctor.Invoke(new object[] { value! });
+                value = ctor.Invoke([value!]);
             }
             if (parameter is FieldInfo fieldInfo)
             {
-                var ctor = fieldInfo.FieldType.GetConstructor(new Type[] { parameterType });
+                var ctor = fieldInfo.FieldType.GetConstructor([parameterType])
+                    ?? throw new InvalidOperationException("Could not construct an instance of the mapped type " + fieldInfo.FieldType.Name + ". No public constructor with parameter type " + parameterType + " found.");
 
-                if (ctor == null)
-                {
-                    throw new InvalidOperationException("Could not construct an instance of the mapped type " + fieldInfo.FieldType.Name + ". No public constructor with parameter type " + parameterType + " found.");
-                }
-
-                value = ctor.Invoke(new object[] { value! });
+                value = ctor.Invoke([value!]);
             }
         }
 
@@ -734,12 +778,13 @@ public class Theorem
     /// Reads a <see cref="DateTime"/> symbol back from the ticks Z3 holds it as.
     /// </summary>
     /// <remarks>
-    /// The symbol is an unbounded integer, so Z3 can satisfy a constraint with a value no
-    /// <see cref="DateTime"/> can hold - <c>t.X1 &gt; DateTime.MaxValue</c> is satisfiable in
-    /// integers. The <see cref="DateTime"/> constructor would throw for that anyway; this throws
-    /// first, naming the symbol and the range, since the constructor names neither. Port of
-    /// endjin/Z3.Linq#95. See endjin/Z3.Linq#87 for bounding the symbol so Z3 cannot pick
-    /// such a value.
+    /// A scalar <see cref="DateTime"/> symbol is bounded to the range of the type when the
+    /// constraints are asserted (#87), so for a scalar this guard cannot fire. A collection
+    /// element is not bounded - its length is not known when the constraints are asserted - so
+    /// an element constrained beyond the range still has a model and still reaches here, and this
+    /// throws naming the symbol and the range rather than letting the <see cref="DateTime"/>
+    /// constructor complain about a parameter. The same trade-off as the checked read of a
+    /// <c>short</c> element: loud rather than wrong.
     /// </remarks>
     private static DateTime ToDateTime(long ticks, string name)
     {
@@ -753,205 +798,91 @@ public class Theorem
     }
 
     /// <summary>
-    /// Extracts a collection (simple or nested array) from the Z3 model.
-    /// Handles both flat arrays (int[]) and nested arrays (int[][]) recursively.
+    /// Reads <paramref name="member"/> off <paramref name="instance"/>, or returns
+    /// <see langword="null"/> if there is no instance to read it from.
     /// </summary>
-    private static object ExtractCollection(object? existingMember, Context context, Model model, Environment subEnv, MemberInfo parameter, Type parameterType)
+    private static object? GetMemberValue(MemberInfo member, object? instance)
     {
-        Type eltType = parameterType.IsArray ? parameterType.GetElementType()! : parameterType.GetGenericArguments()[0];
-
-        if (eltType == null)
+        return instance is null ? null : member switch
         {
-            throw new NotSupportedException("Unsupported untyped array parameter type for " + parameter.Name + ".");
-        }
-
-        var results = new ArrayList();
-
-        var arrVal = subEnv.Expr as ArrayExpr;
-        var multiEnv = subEnv as MultipleEnvironment;
-
-        // Determine the collection length from the existing member
-        int length = 0;
-        if (existingMember != null)
-        {
-            var existingCollection = new ArrayList((ICollection)existingMember);
-            length = existingCollection.Count;
-        }
-
-        // Constants mode: the largest materialized sub-environment index extends the length, so that
-        // every lazily-created Z3 constant (Cells_0, Cells_1, …) is read back from the model.
-        bool isConstantsMode = multiEnv != null && multiEnv.SubEnvironments.Count > 0;
-        if (isConstantsMode)
-        {
-            int maxBound = multiEnv!.SubEnvironments.Keys.Max(k => Convert.ToInt32(k));
-            length = Math.Max(length, maxBound + 1);
-        }
-
-        // Check if this is a nested array (e.g. int[][]) — stored in Properties[typeof(Array)]
-        Environment? innerArrayEnv = null;
-        bool isNestedArray = eltType.IsArray && subEnv.Properties.TryGetValue(typeof(Array), out innerArrayEnv);
-
-        for (int i = 0; i < length; i++)
-        {
-            object? elementVal = null;
-
-            // Constants mode: read the scalar/element Z3 constant straight from its sub-environment.
-            if (isConstantsMode && multiEnv!.SubEnvironments.TryGetValue(i, out var subSubEnv))
-            {
-                if (subSubEnv is MultipleEnvironment nestedMulti)
-                {
-                    // Nested Constants collection (e.g. int[][] modeled as constants): recurse per row.
-                    object? existingSubMember = null;
-                    if (existingMember is ICollection outerCollection)
-                    {
-                        var outerList = new ArrayList(outerCollection);
-                        if (i < outerList.Count)
-                        {
-                            existingSubMember = outerList[i];
-                        }
-                    }
-
-                    elementVal = ExtractCollection(existingSubMember, context, model, nestedMulti, parameter, eltType);
-                }
-                else if (subSubEnv.Expr != null)
-                {
-                    Expr val = model.Eval(subSubEnv.Expr);
-                    elementVal = ConvertScalarExpr(val, eltType, context, model, subEnv, parameter);
-                }
-            }
-            else if (arrVal != null)
-            {
-                // For nested arrays, Select(outer, i) yields the inner array (row i).
-                // For simple arrays, Select(arr, i) yields a scalar value.
-                Expr rowExpr = model.Eval(context.MkSelect(arrVal, context.MkInt(i)));
-
-                if (isNestedArray && innerArrayEnv != null)
-                {
-                    // rowExpr is (Array Int Int) for this row — build a temp environment
-                    // holding it and recurse to extract the inner scalar array.
-                    var rowEnv = new Environment { Expr = rowExpr };
-                    object? existingSubMember = null;
-
-                    if (existingMember is ICollection outerCollection)
-                    {
-                        var outerList = new ArrayList(outerCollection);
-                        if (i < outerList.Count)
-                        {
-                            existingSubMember = outerList[i];
-                        }
-                    }
-
-                    elementVal = ExtractCollection(existingSubMember, context, model, rowEnv, parameter, eltType);
-                }
-                else
-                {
-                    elementVal = ConvertScalarExpr(rowExpr, eltType, context, model, subEnv, parameter);
-                }
-            }
-
-            // Constants mode does not materialize a Z3 constant for an index that the constraints never
-            // reference (e.g. V[2] left free while V[0] and V[1] are constrained, or any interior gap).
-            // Such an index is unconstrained, so any assignment satisfies the theorem; we materialize it
-            // as the element type's default. Without this, a null leaks into a value-type result array and
-            // ArrayList.ToArray(valueType) throws InvalidCastException ("could not be cast down to the
-            // destination array type") — observed for bool[] and for int[] with an interior index gap.
-            if (elementVal == null && eltType.IsValueType)
-            {
-                elementVal = Activator.CreateInstance(eltType);
-            }
-
-            results.Add(elementVal);
-        }
-
-        object value = parameterType.IsArray ? results.ToArray(eltType) : Activator.CreateInstance(parameterType, results.ToArray(eltType))!;
-
-        return value;
+            PropertyInfo property => property.GetValue(instance),
+            FieldInfo field => field.GetValue(instance),
+            _ => null,
+        };
     }
 
     /// <summary>
-    /// Converts a Z3 scalar expression (as evaluated against a model) into a CLR value of the given
-    /// element type. Shared by the Array-mode and Constants-mode collection extraction paths so the
-    /// two modes agree on how Z3 values are materialized.
+    /// Reads the CLR value of a solved symbol from the term the model evaluated it to - the one
+    /// reader the scalar path and the collection-element path share.
     /// </summary>
-    /// <param name="numValExpr">Evaluated Z3 expression of the scalar (already passed through <c>model.Eval</c> for Array mode, or a constant for Constants mode).</param>
-    /// <param name="eltType">CLR element type to convert into.</param>
-    /// <param name="context">Z3 context (used for Decimal/Real evaluation).</param>
-    /// <param name="model">Z3 model (used for Decimal precision evaluation).</param>
-    /// <param name="subEnv">Environment of the collection (used to recurse for complex-object elements).</param>
-    /// <param name="parameter">Member being extracted (for error messages).</param>
-    /// <returns>CLR scalar value.</returns>
-    /// <summary>
-    /// Reads an integral model value back into a CLR <see cref="int"/>/<see cref="long"/>. Handles both the
-    /// integer theory (<see cref="IntNum"/>) and the bit-vector theory (<see cref="BitVecNum"/>, B4 #4616):
-    /// a bit-vector variable surfaces as a <see cref="BitVecNum"/>, which is not an <see cref="IntNum"/>, so the
-    /// plain <c>(IntNum)</c> cast would throw. Bit-vector values are read unsigned (the declared width bounds
-    /// the magnitude).
-    /// </summary>
-    private static object ReadIntegral(Expr val, bool asInt64)
+    /// <param name="expr">The model value of the symbol, or of one collection element.</param>
+    /// <param name="typeCode">The type code of the CLR type to read it as.</param>
+    /// <param name="symbolName">The symbol's name, for the diagnostics.</param>
+    /// <param name="elementType">
+    /// The element type when reading a collection element, or <see langword="null"/> for a scalar.
+    /// It only shapes the "unsupported type" message; the two paths read every supported type
+    /// identically.
+    /// </param>
+    /// <returns>The boxed CLR value.</returns>
+    /// <remarks>
+    /// A bounded integer is read with a checked cast. #87 bounds a scalar symbol to its type's
+    /// range, so a scalar can never be out of range here; a collection element is not bounded - its
+    /// length is not known when the constraints are asserted - so Z3 can pick a value no such type
+    /// can hold, and the checked cast makes that loud rather than wrapping it into a plausible wrong
+    /// answer. A <see cref="DateTime"/> is read from its ticks on the UTC timeline, the encoding the
+    /// write path uses. See #63, #83 and #87.
+    /// </remarks>
+    private static object ReadZ3Value(Expr expr, TypeCode typeCode, string symbolName, Type? elementType)
     {
-        if (val is BitVecNum bitVec)
+        return typeCode switch
         {
-            return asInt64 ? (object)(long)bitVec.UInt64 : (int)bitVec.UInt64;
-        }
-
-        var intNum = (IntNum)val;
-        return asInt64 ? (object)intNum.Int64 : intNum.Int;
+            TypeCode.String => expr.String,
+            TypeCode.Int16 => checked((short)((IntNum)expr).Int),
+            TypeCode.SByte => checked((sbyte)((IntNum)expr).Int),
+            TypeCode.Byte => checked((byte)((IntNum)expr).Int),
+            TypeCode.UInt16 => checked((ushort)((IntNum)expr).Int),
+            TypeCode.Int32 => ((IntNum)expr).Int,
+            TypeCode.Int64 => ((IntNum)expr).Int64,
+            TypeCode.UInt32 => (uint)((BitVecNum)expr).UInt64,
+            TypeCode.UInt64 => ((BitVecNum)expr).UInt64,
+            TypeCode.DateTime => ToDateTime(((IntNum)expr).Int64, symbolName),
+            TypeCode.Boolean => expr.IsTrue,
+            TypeCode.Single => float.Parse(((RatNum)expr).ToDecimalString(32), CultureInfo.InvariantCulture),
+            TypeCode.Decimal => ParseZ3Decimal(((RatNum)expr).ToDecimalString(128)),
+            TypeCode.Double => double.Parse(((RatNum)expr).ToDecimalString(64), CultureInfo.InvariantCulture),
+            _ => throw new NotSupportedException(elementType is null
+                ? "Unsupported parameter type for " + symbolName + "."
+                : $"Unsupported array parameter type for {symbolName} and array element type {elementType.Name}."),
+        };
     }
 
     /// <summary>
-    /// Parses a Z3 rational's decimal rendering into a <see cref="double"/>. Z3's <c>ToDecimalString(n)</c>
-    /// appends a trailing <c>'?'</c> when the rational does not terminate within <paramref name="decimalDigits"/>
-    /// digits (e.g. <c>1/3</c> -> <c>"0.333...3?"</c>). Exact rationals (B7, #4616) make that case routine on
-    /// read-back, so the marker must be stripped before parsing (mirroring the existing decimal-typed path).
+    /// Parses the decimal string Z3 renders a real as into a <see cref="decimal"/>.
     /// </summary>
-    private static double ParseRatNumAsDouble(RatNum ratNum, uint decimalDigits)
+    /// <param name="value">The string from <c>RatNum.ToDecimalString</c>.</param>
+    /// <returns>The parsed value.</returns>
+    /// <remarks>
+    /// Z3 marks an inexact value with a trailing <c>?</c>, which is trimmed before parsing. The
+    /// string is invariant-culture whatever the caller's culture. See #52.
+    /// </remarks>
+    private static decimal ParseZ3Decimal(string value)
     {
-        string decimalString = ratNum.ToDecimalString(decimalDigits);
-        ReadOnlySpan<char> span = decimalString.AsSpan();
-        if (decimalString.EndsWith('?'))
+        ReadOnlySpan<char> span = value.AsSpan();
+        if (value.EndsWith('?'))
         {
             span = span[..^1];
         }
 
-        return double.Parse(span, NumberStyles.Number, CultureInfo.InvariantCulture);
+        return decimal.Parse(span, NumberStyles.Number, CultureInfo.InvariantCulture);
     }
 
-    private static object? ConvertScalarExpr(Expr numValExpr, Type eltType, Context context, Model model, Environment subEnv, MemberInfo parameter)
+    /// <summary>
+    /// Whether <paramref name="type"/> is one the library treats as a collection symbol: an
+    /// array, or a generic type implementing <see cref="IEnumerable"/>.
+    /// </summary>
+    private static bool IsCollection(Type type)
     {
-        switch (Type.GetTypeCode(eltType))
-        {
-            case TypeCode.String:
-                return numValExpr.String;
-            case TypeCode.Int16:
-            case TypeCode.Int32:
-                return ReadIntegral(numValExpr, asInt64: false);
-            case TypeCode.Int64:
-                return ReadIntegral(numValExpr, asInt64: true);
-            case TypeCode.DateTime:
-                return ToDateTime(((IntNum)numValExpr).Int64, parameter.Name);
-            case TypeCode.Boolean:
-                return numValExpr.IsTrue;
-            case TypeCode.Single:
-                return ParseRatNumAsDouble((RatNum)numValExpr, 32);
-            case TypeCode.Decimal:
-            {
-                Expr val = model.Eval(numValExpr);
-                string numValue = ((RatNum)val).ToDecimalString(128);
-                ReadOnlySpan<char> numValueSpan = numValue.AsSpan();
-                if (numValue.EndsWith('?'))
-                {
-                    numValueSpan = numValueSpan[..^1];
-                }
-                return decimal.Parse(numValueSpan, NumberStyles.Number, CultureInfo.InvariantCulture);
-            }
-            case TypeCode.Double:
-                return ParseRatNumAsDouble((RatNum)numValExpr, 64);
-            case TypeCode.Object:
-                // Complex object element within a collection
-                return GetSolution(eltType, context, model, subEnv);
-            default:
-                throw new NotSupportedException($"Unsupported array parameter type for {parameter.Name} and array element type {eltType.Name}.");
-        }
+        return type.IsArray || (type.IsGenericType && typeof(IEnumerable).IsAssignableFrom(type.GetGenericTypeDefinition()));
     }
 
     /// <summary>
@@ -961,11 +892,12 @@ public class Theorem
     /// <param name="context">Z3 context.</param>
     /// <param name="model">Z3 model to evaluate theorem parameters under.</param>
     /// <param name="environment">Environment with bindings of theorem variables to Z3 handles.</param>
+    /// <param name="template">An instance of <typeparamref name="T"/> whose collections give the solution's their length, or null.</param>
     /// <returns>Instance of the environment type with theorem-satisfying values.</returns>
-    private static T GetSolution<T>(Context context, Model model, Environment environment)
+    private static T GetSolution<T>(Context context, Model model, Environment environment, object? template)
     {
         Type t = typeof(T);
-        return (T) GetSolution(t, context, model, environment);
+        return (T) GetSolution(t, context, model, environment, template);
     }
 
     /// <summary>
@@ -975,12 +907,14 @@ public class Theorem
     /// <param name="context">Z3 context.</param>
     /// <param name="model">Z3 model to evaluate theorem parameters under.</param>
     /// <param name="environment">Environment with bindings of theorem variables to Z3 handles.</param>
+    /// <param name="template">An instance of <paramref name="t"/> whose collections give the solution's their length, or null.</param>
     /// <returns>Instance of the environment type with theorem-satisfying values.</returns>
-    private static object GetSolution(Type t, Context context, Model model, Environment environment)
+    private static object GetSolution(Type t, Context context, Model model, Environment environment, object? template)
     {
         // Determine whether T is a compiler-generated type, indicating an anonymous type.
-        // This check might not be reliable enough but works for now.
-        if (t.GetCustomAttributes(typeof(CompilerGeneratedAttribute), false).Any())
+        // This check might not be reliable enough but works for now. IsDefined answers the
+        // has-attribute question without materialising the attribute array.
+        if (t.IsDefined(typeof(CompilerGeneratedAttribute), false))
         {
             // Anonymous types have a constructor that takes in values for all its properties.
             // However, we don't know the order and it's hard to correlate back the parameters
@@ -998,42 +932,26 @@ public class Theorem
                 // Mapping from property to field.
                 var field = fields.SingleOrDefault(f => f.Name.StartsWith($"<{parameter.Name}>"));
 
-                if (field == null)
+                if (field == null) 
                 {
                     continue;
                 }
 
-                // Evaluation of the values though the handle in the environment bindings.
                 var subEnv = environment.Properties[parameter];
 
-                Expr val = model.Eval(subEnv.Expr);
-                if (parameter.PropertyType == typeof(bool))
-                {
-                    field.SetValue(result, val.IsTrue);
-                }
-                else if (parameter.PropertyType == typeof(int))
-                {
-                    field.SetValue(result, ((IntNum)val).Int);
-                }
-                else
-                {
-                    throw new NotSupportedException("Unsupported parameter type for " + parameter.Name + ".");
-                }
+                // The same marshaller a named environment uses, so an anonymous one supports the
+                // same types - including a nested object, which is materialised by the recursion
+                // inside ConvertZ3Expression rather than evaluated here. This branch used to carry
+                // a marshaller of its own that handled bool and int, and evaluated the handle
+                // before checking the type - so a nested object, whose handle is null, reached Z3
+                // and surfaced as a NullReferenceException. See #75.
+                //
+                // The instance here is uninitialised, so a collection on it has no length of its own;
+                // the one on the template - the instance passed to NewTheorem - supplies it. See #78.
+                field.SetValue(result, ConvertZ3Expression(result, context, model, subEnv, parameter, GetMemberValue(parameter, template)));
             }
 
             return result;
-        }
-        else if (t.GetConstructor(Type.EmptyTypes) == null)
-        {
-            // Types initialized through a constructor rather than property setters --
-            // most notably positional records (record Point(int X, int Y)), which expose
-            // their positional parameters as public init-only properties but have NO public
-            // parameterless constructor, so the property-setter idiom in the branch below
-            // cannot be used. Instead we evaluate each constructor parameter from the model
-            // and invoke the (primary) constructor, mirroring how the anonymous-type branch
-            // above reconstructs through a constructor. (DSL backlog B9, #4616 -- lifts the
-            // limitation documented in Z3.Linq.Examples/RecordTheorem.cs.)
-            return ConstructFromModel(t, context, model, environment);
         }
         else
         {
@@ -1042,42 +960,19 @@ public class Theorem
 
             foreach (var parameter in environment.Properties.Keys)
             {
-                if (parameter is PropertyInfo)
+                var subEnv = environment.Properties[parameter];
+
+                // Evaluation of the values through the handle in the environment bindings.
+                object value = ConvertZ3Expression(result, context, model, subEnv, parameter, GetMemberValue(parameter, template));
+
+                switch (parameter)
                 {
-                    var prop = parameter as PropertyInfo;
-
-                    if (prop == null)
-                    {
-                        continue;
-                    }
-
-                    // Evaluation of the values though the handle in the environment bindings.
-                    object value;
-
-                    var subEnv = environment.Properties[prop];
-
-                    value = ConvertZ3Expression(result, context, model, subEnv, prop);
-
-                    prop.SetValue(result, value, null);
-                }
-
-                if (parameter is FieldInfo)
-                {
-                    var prop = parameter as FieldInfo;
-
-                    if (prop == null)
-                    {
-                        continue;
-                    }
-
-                    // Evaluation of the values though the handle in the environment bindings.
-                    object value;
-
-                    var subEnv = environment.Properties[prop];
-
-                    value = ConvertZ3Expression(result, context, model, subEnv, prop);
-
-                    prop.SetValue(result, value);
+                    case PropertyInfo prop:
+                        prop.SetValue(result, value, null);
+                        break;
+                    case FieldInfo field:
+                        field.SetValue(result, value);
+                        break;
                 }
             }
 
@@ -1086,50 +981,28 @@ public class Theorem
     }
 
     /// <summary>
-    /// Reconstructs the solution for a type that is initialized through a constructor rather
-    /// than through property setters (positional records, and any immutable type whose only
-    /// constructor takes the bound members as parameters). Each constructor parameter is matched
-    /// by name to an environment-bound member, evaluated under the model, then passed positionally
-    /// to the constructor. (DSL backlog B9, #4616.)
+    /// Evaluates an expression under a model, supplying a value for any term the model has no
+    /// interpretation for.
     /// </summary>
-    /// <param name="t">Environment type to instantiate.</param>
-    /// <param name="context">Z3 context.</param>
-    /// <param name="model">Z3 model to evaluate theorem parameters under.</param>
-    /// <param name="environment">Environment with bindings of theorem variables to Z3 handles.</param>
-    /// <returns>Instance of the environment type with theorem-satisfying values.</returns>
-    private static object ConstructFromModel(Type t, Context context, Model model, Environment environment)
-    {
-        // Index the bound members by name. Positional records expose their constructor
-        // parameters as public properties whose names match the constructor parameters exactly.
-        var membersByName = environment.Properties.Keys
-            .Where(k => k is PropertyInfo or FieldInfo)
-            .Cast<MemberInfo>()
-            .ToDictionary(m => m.Name, StringComparer.Ordinal);
-
-        // Pick the constructor whose parameters are all satisfiable from the environment
-        // (the record primary constructor); prefer the longest such constructor.
-        var ctor = t.GetConstructors()
-            .Where(c => c.GetParameters().Length > 0 &&
-                        c.GetParameters().All(p => p.Name != null && membersByName.ContainsKey(p.Name)))
-            .OrderByDescending(c => c.GetParameters().Length)
-            .FirstOrDefault()
-            ?? throw new NotSupportedException(
-                $"Type {t.Name} has no parameterless constructor and no constructor whose parameters " +
-                $"match the theorem environment members ({string.Join(", ", membersByName.Keys)}).");
-
-        var parameters = ctor.GetParameters();
-        var args = new object?[parameters.Length];
-        for (int i = 0; i < parameters.Length; i++)
-        {
-            var member = membersByName[parameters[i].Name!];
-            var subEnv = environment.Properties[member];
-
-            // ConvertZ3Expression only reads destinationObject for collection-valued members
-            // (to recover length); scalar and complex sub-object members do not need it, and a
-            // positional record being built has no pre-existing instance to read from.
-            args[i] = ConvertZ3Expression(null!, context, model, subEnv, member);
-        }
-
-        return Activator.CreateInstance(t, args)!;
-    }
+    /// <param name="model">Z3 model to evaluate under.</param>
+    /// <param name="expr">Term to evaluate. Nullable by necessity - see the remarks.</param>
+    /// <returns>The model value of <paramref name="expr"/>.</returns>
+    /// <remarks>
+    /// <para>
+    /// A Z3 model is partial: it assigns values only to the constants the solver actually
+    /// needed. Evaluating one it does not interpret hands back the term itself - an
+    /// <c>IntExpr</c> rather than an <c>IntNum</c> - and the casts in the marshalling switches
+    /// above then fail. The condition is not "no constraint mentions it" but "the model does
+    /// not interpret it": a constraint the solver simplifies away, such as x == x, leaves its
+    /// symbol uninterpreted just the same.
+    /// </para>
+    /// <para>
+    /// Such a theorem is still satisfiable and its free symbols may take any value, so
+    /// completion is enabled and Z3 supplies one. Completion only fills gaps - it never
+    /// overrides a value the solver chose - so symbols the model does interpret are
+    /// unaffected. See https://github.com/endjin/Z3.Linq/issues/51.
+    /// </para>
+    /// </remarks>
+    private static Expr EvaluateWithCompletion(Model model, Expr expr)
+        => model.Eval(expr, completion: true);
 }

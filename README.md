@@ -1,12 +1,12 @@
 # Z3.Linq
 
-.NET 8.0 LINQ bindings for the [Z3 theorem prover](https://github.com/Z3Prover/z3) from [Microsoft Research](https://www.microsoft.com/en-us/research/). 
+.NET 10.0 LINQ bindings for the [Z3 theorem prover](https://github.com/Z3Prover/z3) from [Microsoft Research](https://www.microsoft.com/en-us/research/). 
 
 Based on the proof of concept by [Bart De Smet](https://github.com/bartdesmet) which was curated into [Z3.LinqBinding](https://github.com/RicardoNiepel/Z3.LinqBinding) by [Ricardo Niepel](https://github.com/RicardoNiepel).
 
 ## Examples
 
-A number of examples are included in this solution, which you can run [from .NET Interactive](examples/z3-problems.dib) (requires [Visual Studio Code](https://code.visualstudio.com/)) or [from Visual Studio](solutions/Z3.Linq.Demo/Program.cs).
+A number of examples are included as standalone [Spectre.Console](https://spectreconsole.net/) demos in [`demos/`](demos), each a single-file .NET app. Run the interactive launcher with `dotnet run demos/menu.cs`, or run any one directly, e.g. `dotnet run demos/sudoku.cs`; see the [demos README](demos/README.md) for the full list.
 
 ### Problem - 1st Order Propositional Logic
 
@@ -174,28 +174,110 @@ Three magic methods cover the common one-hot patterns, each mapping to native Z3
 
 The dedicated encoding is measurably cheaper than the `MkIte`+`MkAdd` expansion on the planner's instance: native PB builds ~half the AST nodes, produces ~2.3× smaller SMT-LIB strings, and solves 3-6× faster on `n = 100` indicators (UNSAT case). The [`solutions/pb-bench`](solutions/pb-bench) harness records the comparison.
 
+### When there is no solution
+
+`Solve()` reports an unsatisfiable theorem by returning `default`. For a class environment such as
+`Symbols<int, int>` that is `null` and reads correctly. For a value type - a value tuple, a struct,
+a record struct - `default` is a fully populated instance with every symbol zero, which is also the
+answer to plenty of satisfiable theorems, and it cannot even be compared against `null`:
+
+```csharp
+using (var ctx = new Z3Context())
+{
+    var theorem = from t in ctx.NewTheorem<(int a, int b)>()
+                  where t.a == t.b && t.a > 4 && t.b < 2
+                  select t;
+
+    Console.WriteLine(theorem.Solve());   // (0, 0) - and so is a theorem solved by (0, 0)
+}
+```
+
+Use `TrySolve` where the difference matters. It works for every environment type:
+
+```csharp
+if (theorem.TrySolve(out var result))
+{
+    Console.WriteLine($"{result.a}, {result.b}");
+}
+else
+{
+    Console.WriteLine("No solution.");
+}
+```
+
+For a value-type environment, `SolveOrNull()` gives back a `Nullable<T>` instead, so the usual null
+checks apply:
+
+```csharp
+(int a, int b)? result = theorem.SolveOrNull();
+
+if (result is null)
+{
+    Console.WriteLine("No solution.");
+}
+```
+
+Both have optimisation counterparts - `TryOptimize` and `OptimizeOrNull` - and `TrySolve` is
+available on the deferred form an `orderby` query returns:
+
+```csharp
+var solveable = from t in ctx.NewTheorem<(int a, int b)>()
+                where t.a >= 5 && t.a <= 9
+                orderby t.a
+                select t;
+
+if (solveable.TrySolve(out var cheapest)) { /* ... */ }
+```
+
+### When Z3 cannot decide
+
+Some theorems cannot be decided. Nonlinear integer arithmetic is undecidable in general, and a
+theorem such as *three integers whose cubes sum to 42* leaves Z3 searching until the process is
+killed - the constraints look no more exotic than the ones above. Bound the solve with a
+`Timeout`, or with a `ResourceLimit`, which counts Z3's own units of work and so is reached at the
+same point on every machine:
+
+```csharp
+using (var ctx = new Z3Context { Timeout = TimeSpan.FromSeconds(5) })
+{
+    var theorem = from t in ctx.NewTheorem<Symbols<int, int, int>>()
+                  where (t.X1 * t.X1 * t.X1) + (t.X2 * t.X2 * t.X2) + (t.X3 * t.X3 * t.X3) == 42
+                  select t;
+
+    try
+    {
+        var result = theorem.Solve();
+    }
+    catch (TheoremUndecidedException e)
+    {
+        Console.WriteLine($"Z3 stopped: {e.Reason}");   // Z3 stopped: timeout
+    }
+}
+```
+
+Every solve and optimisation also takes a `CancellationToken`, which interrupts Z3 and throws
+`OperationCanceledException` as usual:
+
+```csharp
+using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+
+var result = theorem.Solve(cancellation.Token);
+```
+
+A theorem Z3 decides within the limit is unaffected, and `TrySolve` returning `false` still means
+exactly one thing: the theorem was proved to have no solution. A solve that stops without deciding
+throws, so it can never be mistaken for one.
+
 ## Getting Started
 
 You can install the [Z3.Linq NuGet Package](https://www.nuget.org/packages/Z3.Linq/).
 
-### For Polyglot Notebooks
-
-Add the package:
-```
-#r "nuget:Z3.Linq"
-```
-Then add the following using statements:
-
-```csharp
-using System;
-using Z3.Linq;
-```
-Then you can copy any of the above samples.
-
 ### For Visual Studio
 
-Add the `Z3.Linq` package.
-Configure your application to [target x64 platform](https://docs.microsoft.com/en-us/visualstudio/ide/how-to-configure-projects-to-target-platforms?view=vs-2022). This is a requirement as `Z3.Linq` uses the [Microsoft.Z3](https://www.nuget.org/packages/Microsoft.Z3/) package.
+Add the `Z3.Linq` package. No platform target is needed: `Microsoft.Z3` supplies native binaries for x64 and arm64 on Windows, Linux and macOS, and the default `AnyCPU` resolves the right one.
+
+> [!NOTE]
+> This applies from the next release onwards. The versions published so far depend on `Microsoft.Z3` 4.12.2 - the newest build on nuget.org - which ships native binaries for `win-x64` and `osx-x64` only. On Linux or arm64 those versions restore successfully and then throw `DllNotFoundException` on the first solve, so they do need [an x64 platform target](https://docs.microsoft.com/en-us/visualstudio/ide/how-to-configure-projects-to-target-platforms?view=vs-2022) on Windows or macOS. Releases are paused until Z3 publishes a current build to nuget.org - see [#60](https://github.com/endjin/Z3.Linq/issues/60).
 
 ## Contributing
 
@@ -233,9 +315,11 @@ All PRs are welcome.
 
 2020: [Karel Frajtak](https://github.com/kfrajtak) adds [support for fractions](https://github.com/kfrajtak/Z3.LinqBinding).
 
-2021: [Howard van Rooijen](https://github.com/HowardvanRooijen) and [Ian Griffiths](https://github.com/idg10) ([endjin](https://github.com/endjin)) upgrade the project to `.NET 6.0`, added `Optimize` support via LINQ's `OrderBy`, [ValueTuple](https://docs.microsoft.com/en-us/dotnet/api/system.valuetuple?view=net-6.0) support, demonstrate using `record` types, and fix nullability issues. They upgraded the solution to use [Z3 NuGet package](https://www.nuget.org/packages/Microsoft.Z3.x64/), merged in features from [Jean-Sylvain Boige](https://github.com/jsboige) and [Karel Frajtak](https://github.com/kfrajtak) forks, created archives of Bart's original blog posts and talks. They republished the project as [Z3.Linq](https://github.com/endjin/Z3.Linq), created a new [Polyglot Notebook](https://github.com/dotnet/interactive) of [samples](examples/z3-problems.dib), and published a NuGet package [Z3.Linq](https://www.nuget.org/packages/Z3.Linq/).
+2021: [Howard van Rooijen](https://github.com/HowardvanRooijen) and [Ian Griffiths](https://github.com/idg10) ([endjin](https://github.com/endjin)) upgrade the project to `.NET 6.0`, added `Optimize` support via LINQ's `OrderBy`, [ValueTuple](https://docs.microsoft.com/en-us/dotnet/api/system.valuetuple?view=net-6.0) support, demonstrate using `record` types, and fix nullability issues. They upgraded the solution to use [Z3 NuGet package](https://www.nuget.org/packages/Microsoft.Z3.x64/), merged in features from [Jean-Sylvain Boige](https://github.com/jsboige) and [Karel Frajtak](https://github.com/kfrajtak) forks, created archives of Bart's original blog posts and talks. They republished the project as [Z3.Linq](https://github.com/endjin/Z3.Linq) and published a NuGet package [Z3.Linq](https://www.nuget.org/packages/Z3.Linq/).
 
 2023: [Whit Waldo](https://github.com/WhitWaldo) upgrades the project to `.NET 8.0`
+
+2026: [Howard van Rooijen](https://github.com/HowardvanRooijen) ([endjin](https://github.com/endjin)) upgrades the project to `.NET 10.0`, adopts [Central Package Management](https://learn.microsoft.com/en-us/nuget/consume-packages/central-package-management), migrates the solution to the [`.slnx`](https://devblogs.microsoft.com/dotnet/introducing-slnx-support-dotnet-cli/) format, and moves the build to [ZeroFailed](https://github.com/zerofailed/ZeroFailed).
 
 ## Project Sponsor
 

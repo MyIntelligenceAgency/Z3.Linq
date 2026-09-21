@@ -34,74 +34,63 @@ public sealed class Z3Context : IDisposable
     public TextWriter? Log { get; set; }
 
     /// <summary>
-    /// Selects which Z3 solver is created when a theorem is solved by this context.
-    /// Default is <see cref="SolverKind.Default"/> (Z3's general-purpose combined solver,
-    /// <c>ctx.MkSolver()</c>), which preserves existing behavior.
-    /// </summary>
-    public SolverKind SolverKind { get; set; } = SolverKind.Default;
-
-    /// <summary>
-    /// The SMT-LIB logic name (e.g. <c>"QF_LIA"</c>, <c>"QF_BV"</c>, <c>"LIA"</c>) used when
-    /// <see cref="SolverKind"/> is <see cref="SolverKind.Logic"/>. A logic-specialized solver
-    /// can be markedly faster on a restricted fragment, at the cost of rejecting constraints
-    /// outside that fragment. Ignored for the other solver kinds.
-    /// </summary>
-    public string? Logic { get; set; }
-
-    /// <summary>
-    /// Optional ordered list of Z3 tactic names (e.g. <c>"simplify"</c>, <c>"solve-eqs"</c>,
-    /// <c>"smt"</c>, <c>"bit-blast"</c>, <c>"sat"</c>, <c>"qfbv"</c>) composed left-to-right with
-    /// <c>AndThen</c> to build the solver. When non-empty, this takes precedence over
-    /// <see cref="SolverKind"/>: the composed tactic's solver is used instead of a plain
-    /// <c>MkSolver</c>/<c>MkSimpleSolver</c>/<c>MkSolver(logic)</c>.
-    ///
-    /// Tactics expose Z3's proof-search pipeline (simplification, equality propagation,
-    /// bit-blasting to SAT, ...) to the DSL — a tactic sequence lets the caller drive the
-    /// strategy that a plain solver picks heuristically. Available names are enumerable via
-    /// <c>Context.NumTactics</c>/<c>Context.TacticNames</c>; unknown names throw
-    /// <see cref="Microsoft.Z3.Z3Exception"/> at solve time.
+    /// Gets or sets how long a single solve or optimisation may run before Z3 gives up, or
+    /// <see langword="null"/> for no limit.
     /// </summary>
     /// <remarks>
-    /// DSL backlog item B10 (#4616): <see cref="SolverKind"/> reached the solver half of
-    /// "configurable solver/tactics"; this property reaches the tactics half. The two compose:
-    /// a non-empty <see cref="Tactics"/> overrides <see cref="SolverKind"/> because a tactic
-    /// already subsumes solver selection (a tactic ends in a SAT/SMT decision procedure).
+    /// <para>
+    /// Some theorems cannot be decided - nonlinear integer arithmetic is undecidable in general -
+    /// and without a limit Z3 searches until the process is killed. When the limit is reached the
+    /// solve throws <see cref="TheoremUndecidedException"/>: the theorem has been proved neither
+    /// satisfiable nor unsatisfiable. A theorem Z3 can decide within the limit is unaffected.
+    /// See #85.
+    /// </para>
+    /// <para>
+    /// Wall-clock time, so the same theorem may or may not hit the limit on a different machine.
+    /// <see cref="ResourceLimit"/> is the deterministic alternative.
+    /// </para>
     /// </remarks>
-    /// <example>
-    /// Bit-vector problem solved through the dedicated bit-blasting pipeline:
-    /// <code>
-    /// using var ctx = new Z3Context { Tactics = new[] { "simplify", "bit-blast", "sat" } };
-    /// </code>
-    /// </example>
-    public IReadOnlyList<string>? Tactics { get; set; }
-
-    /// <summary>
-    /// Sets a Z3 module/global parameter (e.g. <c>"timeout"</c>, <c>"random_seed"</c>,
-    /// <c>"unsat_core"</c>) applied when the underlying <see cref="Context"/> is created.
-    /// Returns this context to allow fluent chaining.
-    /// </summary>
-    /// <param name="name">Parameter name.</param>
-    /// <param name="value">Parameter value (Z3 parses booleans/integers from their string form).</param>
-    /// <returns>This context.</returns>
-    public Z3Context SetParameter(string name, string value)
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// The value is not positive, or exceeds what Z3 can represent in milliseconds.
+    /// </exception>
+    public TimeSpan? Timeout
     {
-        if (string.IsNullOrEmpty(name))
+        get => field;
+        set
         {
-            throw new ArgumentException("Parameter name must be non-empty.", nameof(name));
-        }
+            if (value is { } t && (t <= TimeSpan.Zero || t.TotalMilliseconds > uint.MaxValue))
+            {
+                throw new ArgumentOutOfRangeException(nameof(value), value, "The timeout must be positive and no more than uint.MaxValue milliseconds.");
+            }
 
-        this.config[name] = value ?? throw new ArgumentNullException(nameof(value));
-        return this;
+            field = value;
+        }
     }
 
     /// <summary>
-    /// Gets/sets how collection (array/IEnumerable) properties are modeled in Z3 for theorems created
-    /// by this context. Propagated to each <see cref="Theorem{T}"/> built via <see cref="NewTheorem{T}()"/>.
-    /// Default is <see cref="CollectionHandling.Array"/> to preserve existing behavior (incl. nested int[][]
-    /// support); set to <see cref="CollectionHandling.Constants"/> to model collections as one Z3 constant
-    /// per element (the classic endjin binding model, resurrected).
+    /// Gets or sets how much work Z3 may do on a single solve or optimisation before giving up,
+    /// in Z3's own resource units, or <see langword="null"/> for no limit.
     /// </summary>
-    public CollectionHandling DefaultCollectionHandling { get; set; } = CollectionHandling.Array;
+    /// <remarks>
+    /// The deterministic sibling of <see cref="Timeout"/>: the same theorem does the same amount
+    /// of work everywhere, so a limit that is reached on one machine is reached on all of them.
+    /// The unit is Z3's <c>rlimit</c>, which has no fixed relationship to time. When the limit is
+    /// reached the solve throws <see cref="TheoremUndecidedException"/>. See #85.
+    /// </remarks>
+    /// <exception cref="ArgumentOutOfRangeException">The value is zero.</exception>
+    public uint? ResourceLimit
+    {
+        get => field;
+        set
+        {
+            if (value is 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(value), value, "The resource limit must be positive.");
+            }
+
+            field = value;
+        }
+    }
 
     /// <summary>
     /// Closes the native resources held by the Z3 theorem prover.
@@ -118,27 +107,43 @@ public sealed class Z3Context : IDisposable
     /// <returns>New theorem object based on the given environment.</returns>
     public Theorem<T> NewTheorem<T>()
     {
-        return new Theorem<T>(this) { DefaultCollectionHandling = this.DefaultCollectionHandling };
+        return new Theorem<T>(this);
     }
 
     /// <summary>
-    /// Creates a new theorem based on a skeleton object used to infer the environment
-    /// type with the variables constrained by the theorem.
-    ///
-    /// This overload is useful if one wants to use an anonymous type "on the fly" to
-    /// create a new theorem based on the type's properties as variables.
+    /// Creates a new theorem from a template instance, which supplies the environment type and
+    /// the length of any collection symbols in it.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The type is inferred from the instance, which is what lets an anonymous type be used as
+    /// an environment "on the fly". The instance is also the template for the solution: a
+    /// collection symbol takes its length from the corresponding collection on the template,
+    /// because a solution never changes a collection's length and has to get it from somewhere.
+    /// That is what lets a value tuple or an anonymous type - neither of which has anywhere to
+    /// put an initialiser - hold a collection at all. Where the type has an initialiser of its
+    /// own the template still wins. See #78.
+    /// </para>
+    /// <para>
+    /// Nothing else about the template is read. Its values do not constrain the theorem and do
+    /// not reach the solution, and it is never written to.
+    /// </para>
+    /// </remarks>
     /// <example>
     /// <code>
     /// ctx.NewTheorem(new { x = default(int), y = default(int) }).Where(t => t.x > t.y)
+    /// ctx.NewTheorem((Values: new int[3], Total: 0)).Where(t => t.Values[0] + t.Values[1] + t.Values[2] == t.Total)
     /// </code>
     /// </example>
     /// <typeparam name="T">Theorem environment type (typically inferred).</typeparam>
-    /// <param name="dummy">Dummy parameter, typically an anonymous type instance.</param>
+    /// <param name="template">
+    /// An instance of the environment type. Its collections give the solution's their length;
+    /// nothing else about it is used.
+    /// </param>
     /// <returns>New theorem object based on the given environment.</returns>
-    public Theorem<T> NewTheorem<T>(T dummy)
+    public Theorem<T> NewTheorem<T>(T template)
     {
-        return new Theorem<T>(this) { DefaultCollectionHandling = this.DefaultCollectionHandling };
+        return new Theorem<T>(this, template);
     }
 
     /// <summary>
@@ -151,65 +156,39 @@ public sealed class Z3Context : IDisposable
     }
 
     /// <summary>
-    /// Creates the Z3 solver for a theorem according to <see cref="Tactics"/> (when set) or
-    /// <see cref="SolverKind"/> and <see cref="Logic"/>. Centralizes the solver-factory choice
-    /// that was previously hard-coded to <c>ctx.MkSolver()</c> in <see cref="Theorem"/>. (DSL
-    /// backlog B10, #4616: solver half via <see cref="SolverKind"/>, tactics half via
-    /// <see cref="Tactics"/>.)
+    /// The solver parameters carrying <see cref="Timeout"/> and <see cref="ResourceLimit"/>, or
+    /// <see langword="null"/> when neither is set.
     /// </summary>
-    /// <param name="context">The native Z3 context the solver is created under.</param>
-    /// <returns>The configured solver. A tactic-composed solver when <see cref="Tactics"/> is
-    /// non-empty; otherwise the <see cref="SolverKind"/>-selected solver.</returns>
-    internal Solver CreateSolver(Context context)
+    /// <param name="context">The native context the parameters are created in.</param>
+    /// <remarks>
+    /// Applied per solver rather than through the context configuration, so that a limit is a
+    /// property of the <see cref="Z3Context"/> that can be changed between solves.
+    /// </remarks>
+    internal Params? CreateLimits(Context context)
     {
-        // Tactics take precedence over SolverKind: a tactic sequence already ends in a
-        // decision procedure, so layering SolverKind on top would be a no-op or a contradiction.
-        if (Tactics is { Count: > 0 })
+        if (this.Timeout is null && this.ResourceLimit is null)
         {
-            return context.MkSolver(ComposeTactics(context));
+            return null;
         }
 
-        switch (SolverKind)
+        Params limits = context.MkParams();
+
+        if (this.Timeout is { } t)
         {
-            case SolverKind.Simple:
-                return context.MkSimpleSolver();
-
-            case SolverKind.Logic:
-                if (string.IsNullOrEmpty(Logic))
-                {
-                    throw new InvalidOperationException(
-                        $"{nameof(SolverKind)}.{nameof(SolverKind.Logic)} requires {nameof(Logic)} " +
-                        "to be set to an SMT-LIB logic name (e.g. \"QF_LIA\").");
-                }
-
-                return context.MkSolver(Logic);
-
-            case SolverKind.Default:
-            default:
-                return context.MkSolver();
-        }
-    }
-
-    /// <summary>
-    /// Composes the <see cref="Tactics"/> sequence into a single Z3 tactic via
-    /// <c>AndThen</c> (left-to-right sequencing). <c>AndThen(t1, t2, ...)</c> requires at least
-    /// two tactics, so a single-element sequence is returned unwrapped.
-    /// </summary>
-    /// <param name="context">The native Z3 context used to build each tactic.</param>
-    /// <returns>The composed tactic.</returns>
-    /// <exception cref="Microsoft.Z3.Z3Exception">Thrown by Z3 if any name is not a known
-    /// tactic (the exception carries the offending name; available names are enumerable via
-    /// <c>Context.TacticNames</c>).</exception>
-    private Tactic ComposeTactics(Context context)
-    {
-        var names = Tactics!;
-        if (names.Count == 1)
-        {
-            return context.MkTactic(names[0]);
+            // Round up, not truncate: Z3's timeout is in whole milliseconds, and a positive
+            // TimeSpan below one millisecond truncates to 0, which Z3 reads as "no timeout" - so
+            // a caller who asked for a tiny timeout would silently get none. Ceiling keeps any
+            // positive timeout at least one millisecond, and stays within uint (the setter bounds
+            // the value at uint.MaxValue milliseconds).
+            limits.Add("timeout", (uint)Math.Ceiling(t.TotalMilliseconds));
         }
 
-        Tactic[] built = names.Select(context.MkTactic).ToArray();
-        return context.AndThen(built[0], built[1], built[2..]);
+        if (this.ResourceLimit is { } r)
+        {
+            limits.Add("rlimit", r);
+        }
+
+        return limits;
     }
 
     /// <summary>
@@ -218,9 +197,6 @@ public sealed class Z3Context : IDisposable
     /// <param name="s">Log output string.</param>
     internal void LogWriteLine(string s)
     {
-        if (Log != null)
-        {
-            Log.WriteLine(s);
-        }
+        Log?.WriteLine(s);
     }
 }
