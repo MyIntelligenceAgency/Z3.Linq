@@ -64,19 +64,38 @@ public class Int16RoundTripTests
     }
 
     [Fact]
-    public void Solve_ShortBeyondRange_ThrowsNamingTheSymbol()
+    public void Solve_ShortBeyondRange_IsUnsatisfiable()
     {
-        // The symbol is an unbounded integer to Z3: b.S > short.MaxValue is satisfiable
-        // with a value no short can hold. The read throws OverflowException naming the
-        // symbol, rather than letting reflection fail with a type-mismatch
-        // ArgumentException far from the cause (checked read, per the DateTime pattern).
+        // This test used to pin the checked read: the symbol was an unbounded integer to
+        // Z3, so b.S > short.MaxValue was satisfiable with a value no short can hold, and
+        // the read threw. The scalar is now bounded to the type's range (#17301, port of
+        // endjin/Z3.Linq#98), the same way DateTime is, so the true answer is "no model"
+        // rather than "a model that cannot be read" -- the read is no longer reached.
+        using var ctx = new Z3Context();
+
+        var solution = ctx.NewTheorem<ShortBag>()
+            .Where(b => b.S > short.MaxValue)
+            .Solve();
+
+        Assert.Null(solution);
+    }
+
+    [Fact]
+    public void Solve_ShortInListBeyondRange_StillThrowsNamingTheSymbol()
+    {
+        // The bounds reach scalars only. A collection is an array from Int to the element
+        // sort and its length is not known when the theorem is built, so an element is
+        // still read with a checked ToInt16 -- and that read is what this pins. Without it,
+        // converting the scalar test above would have removed the only coverage of the
+        // checked Int16 element read (regle anti-regression : on deplace la couverture, on
+        // ne la supprime pas).
         using var ctx = new Z3Context();
 
         var ex = Assert.Throws<OverflowException>(() =>
-            ctx.NewTheorem<ShortBag>()
-                .Where(b => b.S > short.MaxValue)
+            ctx.NewTheorem<ShortListBag>()
+                .Where(b => b.Values[0] > short.MaxValue)
                 .Solve());
 
-        Assert.Contains("S", ex.Message);
+        Assert.Contains("Values", ex.Message);
     }
 }

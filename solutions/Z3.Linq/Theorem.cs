@@ -284,6 +284,10 @@ public class Theorem
             this.context.LogWriteLine(expression.ToString());
         }
 
+        // Bound every scalar symbol whose CLR type has a range, so Z3 cannot pick a value the type
+        // cannot hold. Port of endjin/Z3.Linq#98 (their #87).
+        AssertBounds(context, approach, environment);
+
         // Soft (weighted MaxSAT) constraints: only an Optimize object can carry them. Each is asserted
         // with its weight and group, so Z3 minimizes the total weight of the soft constraints it leaves
         // unsatisfied (B1, #4616). A plain Solver silently ignores them — but Solve<T>() routes through the
@@ -300,6 +304,89 @@ public class Theorem
             }
         }
     }
+
+    /// <summary>
+    /// Asserts, for every scalar symbol whose CLR type is a bounded integer, that the symbol lies
+    /// within the range of that type. Port of endjin/Z3.Linq#98 (their #87).
+    /// </summary>
+    /// <param name="context">Z3 context.</param>
+    /// <param name="approach">The <see cref="Solver"/> or <see cref="Optimize"/> to assert into.</param>
+    /// <param name="environment">Environment with bindings of theorem variables to Z3 handles.</param>
+    /// <remarks>
+    /// <para>
+    /// A <c>short</c>, <c>int</c>, <c>long</c> or <see cref="DateTime"/> symbol travels through Z3
+    /// as an unbounded integer, so without this a constraint no value of the type could satisfy --
+    /// a <c>short</c> equal to 40000, a <see cref="DateTime"/> after <see cref="DateTime.MaxValue"/>
+    /// -- still had a model, and the failure surfaced only on the way out, in the checked read
+    /// ported from endjin/Z3.Linq#95. With the bounds the theorem is unsatisfiable, which is the
+    /// true answer, instead of satisfiable-with-a-value-that-cannot-be-read.
+    /// </para>
+    /// <para>
+    /// Only scalars are bounded. A collection is an array from <c>Int</c> to the element sort and
+    /// its length is not known here -- it comes from the instance when the solution is read -- and
+    /// bounding every element would take a quantifier, which can cost Z3 its completeness. An
+    /// element is therefore still read with a checked conversion: loud rather than wrong.
+    /// </para>
+    /// <para>
+    /// Bit-vector variables are not affected: they are <see cref="BitVecExpr"/>, not
+    /// <see cref="IntExpr"/>, and their width is the bound.
+    /// </para>
+    /// </remarks>
+    private static void AssertBounds(Context context, Z3Object approach, Environment environment)
+    {
+        foreach (var pair in environment.Properties)
+        {
+            var child = pair.Value;
+
+            if (child.Expr is IntExpr symbol && GetBounds(SymbolType(pair.Key)) is { } range)
+            {
+                BoolExpr bounds = context.MkAnd(
+                    context.MkGe(symbol, context.MkInt(range.Low)),
+                    context.MkLe(symbol, context.MkInt(range.High)));
+
+                switch (approach)
+                {
+                    case Solver solver:
+                        solver.Assert(bounds);
+                        break;
+                    case Optimize optimize:
+                        optimize.Assert(bounds);
+                        break;
+                }
+            }
+
+            AssertBounds(context, approach, child);
+        }
+    }
+
+    /// <summary>
+    /// The CLR type a bound environment entry stands for. Collections are keyed by
+    /// <see cref="Array"/> itself, which has no range and is therefore left unbounded.
+    /// </summary>
+    private static Type SymbolType(MemberInfo member) =>
+        member switch
+        {
+            Type type => type,
+            FieldInfo field => field.FieldType,
+            PropertyInfo property => property.PropertyType,
+            _ => typeof(object),
+        };
+
+    /// <summary>
+    /// The range of values a CLR type can hold, for the types that travel through Z3 as an
+    /// integer, or <see langword="null"/> for a type with no such range (or no range that can be
+    /// stated as a pair of <see cref="long"/> values, e.g. <c>ulong</c>).
+    /// </summary>
+    /// <param name="type">The symbol's CLR type.</param>
+    private static (long Low, long High)? GetBounds(Type type) =>
+        Type.GetTypeCode(type) switch
+        {
+            TypeCode.Int16 => (short.MinValue, short.MaxValue),
+            TypeCode.Int32 => (int.MinValue, int.MaxValue),
+            TypeCode.Int64 => (long.MinValue, long.MaxValue),
+            TypeCode.DateTime => (DateTime.MinValue.Ticks, DateTime.MaxValue.Ticks),
+            _ => null,
+        };
 
     /// <summary>
     /// Resolves the hard constraints to assert, applying a registered <see cref="TheoremGlobalRewriterAttribute"/>
