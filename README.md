@@ -197,6 +197,18 @@ Then you can copy any of the above samples.
 Add the `Z3.Linq` package.
 Configure your application to [target x64 platform](https://docs.microsoft.com/en-us/visualstudio/ide/how-to-configure-projects-to-target-platforms?view=vs-2022). This is a requirement as `Z3.Linq` uses the [Microsoft.Z3](https://www.nuget.org/packages/Microsoft.Z3/) package.
 
+## Benchmarks
+
+Le projet `solutions/Z3.Linq.Benchmarks` (BenchmarkDotNet) mesure l'API publique —
+traduction d'expressions LINQ vers les AST Z3, résolution SMT, extraction du modèle —
+sur trois charges déterministes (linéaire, cryptarithme SEND+MORE=MONEY, mini-Sudoku 4x4).
+Les mesures de référence .NET 9 et le protocole : [`benchmarks/BASELINE-net9.0.md`](benchmarks/BASELINE-net9.0.md).
+
+```bash
+cd solutions/Z3.Linq.Benchmarks
+dotnet run -c Release -- --filter '*'
+```
+
 ## Contributing
 
 There are a number of ways in which you could contribute to this project:
