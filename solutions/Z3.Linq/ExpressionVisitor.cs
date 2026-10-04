@@ -410,9 +410,21 @@ public static class ExpressionVisitor
 
                 throw new NotSupportedException($"Could not reduce expression {topMember.Expression}");
             }
+            else if (topMember.Expression is null
+                && topMember.Member is FieldInfo { IsStatic: true, IsInitOnly: true } constantField
+                && constantField.DeclaringType == typeof(DateTime))
+            {
+                // A static readonly field on DateTime - MaxValue, MinValue, UnixEpoch - is a
+                // compile-time constant. Constraints such as t.D > DateTime.MaxValue used to die
+                // here as "Unknown parameter encountered: MaxValue", although the read path
+                // (Theorem.ToDateTime) is written, and documented, to answer them with an
+                // OverflowException naming the symbol. Translating the field as its ticks makes
+                // that behaviour reachable, and lets an at-range constraint round-trip.
+                return VisitConstantValue(context, constantField.GetValue(null)!);
+            }
             else
             {
-                //Debugger.Break(); 
+                //Debugger.Break();
             }
         }
 
