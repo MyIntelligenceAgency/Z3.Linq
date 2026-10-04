@@ -43,7 +43,7 @@
 |---|---|---|
 | #74 | Drop constraints dodging #51 | OPEN — équivalent à notre PB |
 | #86 | Report satisfiability separately | OPEN — équivalent Explain/UNSAT-core |
-| #88 | Make short and enum symbols work | OPEN — pas dans le fork |
+| #88 | Make short and enum symbols work | OPEN — équivalent Int16 read-back ; bras élément `List<short>` mesuré cassé (2026-10-04, rapport posté) |
 | #90 | Give collections same sorts as scalars | OPEN — équivalent partiel |
 | #91 | Marshal anonymous environments | OPEN — équivalent record envs |
 | #92 | Numeric conversions by sort | OPEN — pas dans le fork |
@@ -71,10 +71,30 @@
 
 ### P0 — débloquer le pend ✅ (ce document)
 
+> **État mesuré au 2026-10-04** (myia-po-2027) : la ligne ci-dessous est périmée — le
+> commentaire de reframe sur endjin#43 a bien été posté les 2026-09-17/18 (reframe
+> « dynamic assemblies » + design du test Roslyn + questions de ciblage en c.2 ; preuve
+> red/green du repro cross-submission en c.3). L'acceptance P0 « commentaire posté »
+> est remplie ; les questions de ciblage attendent la réponse d'Howard.
+
 - Cartographie des 51 commits fork → PRs endjin candidates
 - Aucun commentaire PR endjin posté (à faire en P1)
 
 ### P1 — PR de tests contre `endjin/main`
+
+> **État mesuré au 2026-10-04** (myia-po-2027) :
+> - #111 (harnais, base `main`) et #112 (DateTime round-trip, empilée sur
+>   `feature/datetime-ticks`) ouvertes — le livrable « PR amont ouverte » est tenu.
+> - « bound scalars » = **NO-OP** : `SymbolBoundsTests` existe déjà sur la branche
+>   endjin#98 (notre suite fork en est le port, pas l'inverse — mesuré).
+> - **Mesuré sur #88** (short/enum) : le bras ÉLÉMENT de `List<short>` crashe à la
+>   traduction (`InvalidCastException BitVecExpr→RealExpr`, `VisitConvert`) — brèche
+>   héritée du bloc `arrRange` legacy (`Int16 → BitVecSort(16)`, vanilla 2024) qui
+>   SURVIT au fix (identique sur la base #86). Repro sur
+>   `tests/port-int16-roundtrip-88`, rapport posté sur endjin#88 (2026-10-04).
+> - Les branches de pile portent leur **propre harnais MSTest+Shouldly** (pas le
+>   harnais xUnit de #111) : chaque port de suite s'adapte à leurs conventions
+>   (`[TestClass]`, `Should.Throw`, Arrange/Act/Assert).
 
 - endjin #111 « xUnit test project » = base
 - Porter nos suites vertes (DateTime round-trip, bound scalars, etc.) sur `endjin/main`
