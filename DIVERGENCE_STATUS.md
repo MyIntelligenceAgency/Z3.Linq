@@ -102,6 +102,18 @@
 
 ### P2 — branche d'intégration (participation)
 
+> **État mesuré au 2026-10-04** (myia-po-2027) : **LIVRÉ le 2026-09-21** — les lignes
+> ci-dessous décrivent du travail déjà fait. Branche
+> `integration/endjin-stack-20260921` (merge `3f799a5` + bench `a4e44e2`), rapport
+> publié sur endjin#110 (c. 2026-09-21T12:39Z, 5228 car.) : carte de conflits
+> complète (11 fichiers / 48 hunks, résolutions motivées), banc 43 tests
+> (12 pass / 31 fail, dominés par les extensions downstream — mécaniques à porter),
+> **2 findings actionnables amont** : (1) `DateTime.MaxValue/MinValue` statiques →
+> `NotSupportedException` au lieu d'`OverflowException` nommant le symbole (voie
+> partagée, candidat PR) ; (2) divergence sémantique bounds bit-vector (wrap mod 16
+> vs pas de témoin). Voir aussi `integration/howard-stack` (répétition de merge du
+> 17/09, rehearsal 10 fichiers). Ce document ne l'avait pas enregistré.
+
 - Merger le stack amont (28 PRs endjin) dans une branche d'intégration
 - Lancer nos suites, publier résultats sur endjin #110
 - Carte commits-fork × PRs-amont en conflit
