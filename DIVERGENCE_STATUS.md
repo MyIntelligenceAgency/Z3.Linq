@@ -2,6 +2,8 @@
 
 > État au 2026-09-26, dans le cadre de l'EPIC #16609 (réintégration avant divergence consommée, plan 4 phases).
 
+> **Erratum du 2026-10-04 (G1 de l'EPIC #14169, mesure #16050)** — les colonnes « PR endjin candidate » ci-dessous ont été re-mesurées PR par PR contre les diffs réels ; le verdict détaillé et les preuves vivent dans [`OVERLAP_G1.md`](OVERLAP_G1.md). Claims **réfutés** par la mesure : « #74 équivalent à notre PB » (×3, le diff #74 est test-only amont — le PB fork est fork-original sans candidate amont) · « #96 équivalent MaxSAT soft » (collision de titres) · « #88 pas dans le fork » (présent : a54ba1b + 5ad0c7b) · « #92 pas dans le fork » (capacité présente, seul le single-mapping manque) · « #91 équivalent record envs » (défaut anonymous vivant, Theorem.cs:1114-1130) · « #93 équivalent default-fill » (le template de taillage n'existe pas). Mal étiqueté : row 4 (5ad0c7b est la contrepartie #88, pas #84 — la capacité #84 vient de 6eab957). Également re-mesuré ce jour : ahead = **54** (les 3 commits de doc inclus), PRs endjin ouvertes = 45 (28 du périmètre G1 + 16 nouvelles, tri dans OVERLAP_G1.md §7).
+
 ## Résumé
 
 - **Fork** : `MyIntelligenceAgency/Z3.Linq` (`origin/main` = `fddd586`).
