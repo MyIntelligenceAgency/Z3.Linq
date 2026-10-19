@@ -11,6 +11,8 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Z3.Linq.Examples", "Z3.Linq
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Z3.Linq.Tests", "Z3.Linq.Tests\Z3.Linq.Tests.csproj", "{A84EAF9B-8E78-4BB2-B4BD-0E663638EE89}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Z3.Linq.Benchmarks", "Z3.Linq.Benchmarks\Z3.Linq.Benchmarks.csproj", "{C79E71D5-D339-4014-8B14-4B7DD62CAC03}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -69,6 +71,18 @@ Global
 		{A84EAF9B-8E78-4BB2-B4BD-0E663638EE89}.Release|x64.Build.0 = Release|Any CPU
 		{A84EAF9B-8E78-4BB2-B4BD-0E663638EE89}.Release|x86.ActiveCfg = Release|Any CPU
 		{A84EAF9B-8E78-4BB2-B4BD-0E663638EE89}.Release|x86.Build.0 = Release|Any CPU
+		{C79E71D5-D339-4014-8B14-4B7DD62CAC03}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C79E71D5-D339-4014-8B14-4B7DD62CAC03}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C79E71D5-D339-4014-8B14-4B7DD62CAC03}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{C79E71D5-D339-4014-8B14-4B7DD62CAC03}.Debug|x64.Build.0 = Debug|Any CPU
+		{C79E71D5-D339-4014-8B14-4B7DD62CAC03}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{C79E71D5-D339-4014-8B14-4B7DD62CAC03}.Debug|x86.Build.0 = Debug|Any CPU
+		{C79E71D5-D339-4014-8B14-4B7DD62CAC03}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C79E71D5-D339-4014-8B14-4B7DD62CAC03}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C79E71D5-D339-4014-8B14-4B7DD62CAC03}.Release|x64.ActiveCfg = Release|Any CPU
+		{C79E71D5-D339-4014-8B14-4B7DD62CAC03}.Release|x64.Build.0 = Release|Any CPU
+		{C79E71D5-D339-4014-8B14-4B7DD62CAC03}.Release|x86.ActiveCfg = Release|Any CPU
+		{C79E71D5-D339-4014-8B14-4B7DD62CAC03}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
