@@ -110,6 +110,73 @@ L'acceptance G1 du 2026-09-01 listait 28 PRs ; le plateau amont compte 45 ouvert
 - Les références CoursIA `#16053` et `#16070` citées par `DIVERGENCE_STATUS.md` sont **inrésolvables** (issue/PR introuvables dans CoursIA, le fork et la recherche GitHub au 2026-10-04) — à renuméroter ou retirer à la prochaine retouche du document.
 - Mesure bornée au code : les verdicts portent sur les diffs amont au SHA head relevé le 2026-10-04 et l'arbre fork `24ed366` ; aucun test n'a été exécuté pour ce doc (les exécutions citées sont celles des suites existantes, rapportées par les mesures de preuve).
 
+## G1-bis — Verdict des 13 PRs post-G1 (commits #100-#112 amont)
+
+**Grain G1-bis de l'EPIC #14169** (CoursIA) — issue #20763. Livré par la lane `myia-po-2027:CoursIA-2`, mesuré c.1742-c.1745 (2026-10-19).
+
+### Bases de la mesure G1-bis
+
+| Base | Valeur mesurée |
+|---|---|
+| Fork `MyIntelligenceAgency/Z3.Linq`, branche `main` | `8c7ae3e8` (au moment de la mesure) |
+| PRs amont endjin/Z3.Linq dans la file post-G1 | **13** (PRs #100-#112), continuation directe du train de Howard + 2 PRs jsboige |
+| Date de mesure | 2026-10-19 (c.1742-c.1745) |
+| Issue CoursIA de cadrage | #20763 |
+
+Méthode : pour chaque PR amont, le **diff réel** (pas le titre) est confronté au code du fork par lecture directe — `gh api` endjin pour la description + files, `gh api` MyIntelligenceAgency/Z3.Linq à 8c7ae3e8 pour le raw content des fichiers fork concernés. Mesure plus resserrée que G1 (PRs individuelles, pas commits) — chaque verdict cite au moins une preuve `file:line` côté amont **et** côté fork.
+
+### Tableau des 13 verdicts G1-bis
+
+| PR amont | Sujet | Auteur | Verdict | Preuve fork principale |
+|---|---|---|---|---|
+| #100 | ExpressionVisitor internal instance | Howard | **DIVERGENT** | fork `ExpressionVisitor.cs:1-1244`, instance `Visitor` publique lignes 33-37 (breaking API) |
+| #101 | uint/ulong → BitVec | Howard | **DIVERGENT** | fork mapping-de-type par `BitVecWidthAttribute` (mécanisme différent, ligne 200+) |
+| #102 | byte/sbyte/ushort → bounded int | Howard | **DIVERGENT** | extension de #101, même mécanisme (mapping-de-type attribut-utilisateur) |
+| #103 | fix solve-limits defects | Howard | **NOUVEAU** | nécessite PR #96 d'abord (work absent du fork) |
+| #104 | BenchmarkDotNet suite | Howard | **NOUVEAU** | 5 nouveaux fichiers benchmark, dossier `benchmarks/` 404 dans le fork |
+| #105 | cache reflection | Howard | **NOUVEAU** | optimisation memory, 0 hits `ConcurrentDictionary`/`MemoryCache` dans le solve path fork |
+| #106 | C# 14 idioms modern | Howard | **NOUVEAU** | fork 0 hits `LanguageVersion`/`LangVersion`, patterns C# 14 absents |
+| #107 | Extract MemberClrType | Howard | **NOUVEAU** | fork `Theorem.cs` 0 hits `MemberClrType`, 6+ duplications `PropertyType`/`FieldType` lignes 370-371, 634-635, 701-702 |
+| #108 | Extract Assert (Solver/Optimize dispatch) | Howard | **NOUVEAU** | fork `Theorem.cs` 2 hits `switch (approach)` lignes 274, 347 + 4 hits `Assert(` lignes 277, 280, 350 |
+| #109 | Merge scalar/element marshallers (ReadZ3Value) | Howard | **NOUVEAU** | fork `Theorem.cs` 0 hits `ReadZ3Value`, 1 hit `switch (typeCode)` ligne 742 + 59 hits `TypeCode` lignes 382-385, 714-715 (3ème dedup refactor) |
+| #110 | demos/ Spectre.Console apps | Howard | **NOUVEAU** strict | `gh api ... /contents/demos?ref=8c7ae3e8` retourne 404 (dossier `demos/` absent) |
+| #111 | xUnit test project (BasicTheoremTests.cs) | jsboige | **NOUVEAU** | `BasicTheoremTests.cs` absent du fork (mais 18 autres fichiers de tests présents dans `solutions/Z3.Linq.Tests/`) |
+| #112 | DateTime round-trip suite (ticks encoding) | jsboige | **REDONDANT** strict | fork a déjà `DateTimeRoundTripTests.cs` (4499 bytes) — **1er REDONDANT de la file G1-bis** |
+
+**Tendance G1-bis** : 3 DIVERGENT (23%) + 9 NOUVEAU (69%) + 1 REDONDANT (8%) sur 13 PRs.
+
+### Synthèse G1-bis
+
+1. **DIVERGENT (3 PRs)** : débat architectural **mapping-de-type** vs **attribut-utilisateur**. Les PRs #100, #101, #102 touchent toutes au même débat (endjin propose un mapping-de-type pour les entiers bornés via `BitVecWidthAttribute`-like, le fork utilise un autre mécanisme par attribut sur le symbole). Le maintien de la séparation fork/amont est légitime tant que les deux mécanismes peuvent coexister.
+
+2. **NOUVEAU (9 PRs)** : works performance/memory/modernisation/tests absents du fork —
+   - **Works spécifiques** : #103 (solve-limits fix, nécessite #96 d'abord), #104 (BenchmarkDotNet, 5 fichiers), #105 (cache reflection), #106 (C# 14 modern — upgrade .NET 10).
+   - **Refactors dedup** : #107 (MemberClrType), #108 (Assert), #109 (ReadZ3Value) — **3 quick wins de lisibilité, -94 lignes total**, purement internes, pas de breaking API.
+   - **Écosystème** : #110 (demos Spectre.Console, non pertinent pour le fork qui utilise Jupyter), #111 (xUnit test coverage, obsolète : projet de test existe déjà).
+
+3. **REDONDANT (1 PR)** : #112 est une **synchronisation fork → amont** (le fork EST la source de `DateTimeRoundTripTests.cs`). C'est le signe que jsboige maintient activement les deux côtés et synchronise les tests.
+
+### Recommandation pour le port G2
+
+- **Priorité 1 (quick wins)** : #107, #108, #109 — 3 refactors dedup, total **-94 lignes**, purement internes, pas de breaking API. **Port direct recommandé**.
+- **Priorité 2 (gouvernance)** : escalader #100, #101, #102 au mainteneur MyIntelligenceAgency pour arbitrage mapping-de-type vs BitVecWidthAttribute.
+- **Priorité 3 (works spécifiques)** : #103, #104, #105, #106 — port conditionnel, gouvernance .NET 10 + pertinence bench/cache pour le fork.
+- **À ignorer** : #110 (demos, non pertinent), #111 (obsolète), #112 (déjà dans fork).
+
+### Bornes de la mesure G1-bis
+
+- Les verdicts portent sur les diffs amont au SHA head relevé le 2026-10-19 et l'arbre fork `8c7ae3e8`.
+- Aucun test n'a été exécuté pour ce cadrage (les exécutions citées restent celles des suites existantes).
+- Les 4 commentaires de cadrage c.1742-c.1745 sont archivés dans l'issue CoursIA #20763 (comment 6257828479, 6257868430, 6257891964, 6257960599).
+
+### Liens
+
+- EPIC CoursIA #14169 · grain G1 #16050 · cadrage G1-bis #20763
+- `DIVERGENCE_STATUS.md` (cartographie 54-ahead, précisée par G1 §6)
+- Issue CoursIA #20763 : https://github.com/jsboige/CoursIA/issues/20763
+- Amont : <https://github.com/endjin/Z3.Linq>
+- Lane : `myia-po-2027:CoursIA-2`
+
 ## Liens
 
 - EPIC CoursIA #14169 · grain G1 #16050 (claim : paths `Z3.Linq/OVERLAP_G1.md` + submodule)
