@@ -1209,27 +1209,40 @@ public class Theorem
     {
         // Index the bound members by name. Positional records expose their constructor
         // parameters as public properties whose names match the constructor parameters exactly.
+        // ValueTuple`N is the notable exception: its fields are named Item1..ItemN while its
+        // constructor parameters are named item1..itemN, so a secondary case-insensitive index
+        // (tried only when the ordinal lookup misses) bridges the mismatch. First match wins
+        // per case-insensitive group, so a type with members differing only by case keeps
+        // materializing instead of crashing on a duplicate key.
         var membersByName = environment.Properties.Keys
             .Where(k => k is PropertyInfo or FieldInfo)
             .Cast<MemberInfo>()
-            .ToDictionary(m => m.Name, StringComparer.Ordinal);
+            .ToArray();
+        var byName = membersByName.ToDictionary(m => m.Name, StringComparer.Ordinal);
+        var byNameIgnoreCase = membersByName
+            .GroupBy(m => m.Name, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
+        bool TryGetMember(string name, out MemberInfo member) =>
+            byName.TryGetValue(name, out member!) ||
+            byNameIgnoreCase.TryGetValue(name, out member!);
 
         // Pick the constructor whose parameters are all satisfiable from the environment
         // (the record primary constructor); prefer the longest such constructor.
         var ctor = t.GetConstructors()
             .Where(c => c.GetParameters().Length > 0 &&
-                        c.GetParameters().All(p => p.Name != null && membersByName.ContainsKey(p.Name)))
+                        c.GetParameters().All(p => p.Name != null && TryGetMember(p.Name!, out _)))
             .OrderByDescending(c => c.GetParameters().Length)
             .FirstOrDefault()
             ?? throw new NotSupportedException(
                 $"Type {t.Name} has no parameterless constructor and no constructor whose parameters " +
-                $"match the theorem environment members ({string.Join(", ", membersByName.Keys)}).");
+                $"match the theorem environment members ({string.Join(", ", membersByName.Select(m => m.Name))}).");
 
         var parameters = ctor.GetParameters();
         var args = new object?[parameters.Length];
         for (int i = 0; i < parameters.Length; i++)
         {
-            var member = membersByName[parameters[i].Name!];
+            TryGetMember(parameters[i].Name!, out var member);
             var subEnv = environment.Properties[member];
 
             // ConvertZ3Expression only reads destinationObject for collection-valued members
