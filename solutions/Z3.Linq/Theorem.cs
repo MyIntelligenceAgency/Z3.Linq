@@ -1114,19 +1114,15 @@ public class Theorem
                 // Evaluation of the values though the handle in the environment bindings.
                 var subEnv = environment.Properties[parameter];
 
-                Expr val = model.Eval(subEnv.Expr);
-                if (parameter.PropertyType == typeof(bool))
-                {
-                    field.SetValue(result, val.IsTrue);
-                }
-                else if (parameter.PropertyType == typeof(int))
-                {
-                    field.SetValue(result, ((IntNum)val).Int);
-                }
-                else
-                {
-                    throw new NotSupportedException("Unsupported parameter type for " + parameter.Name + ".");
-                }
+                // Delegate scalar materialization to ConvertZ3Expression's full type dispatch
+                // (string, int16/32/64, DateTime, bool, single, decimal, double) instead of the
+                // former inline bool/int-only dispatch, which rejected anonymous types with
+                // double members -- notably the demo's oil purchase problem. destinationObject
+                // is only read for collection-valued members; anonymous environments are
+                // scalar-only, so the uninitialized instance is safe to pass.
+                // (Finding 2, MyIntelligenceAgency/Z3.Linq#35; measured at CoursIA #18770.)
+                var value = ConvertZ3Expression(result, context, model, subEnv, parameter);
+                field.SetValue(result, value);
             }
 
             return result;
