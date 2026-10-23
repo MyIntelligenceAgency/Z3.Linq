@@ -1,6 +1,7 @@
 namespace Z3.Linq;
 
 using System;
+using System.Numerics;
 
 /// <summary>
 /// An <b>exact</b> rational constant for real-arithmetic constraints (DSL backlog item B7, #4616). Real
@@ -89,6 +90,46 @@ public readonly struct Rational : IEquatable<Rational>
     public static bool operator <=(double left, Rational right) => left <= (double)right;
     public static bool operator >(double left, Rational right) => left > (double)right;
     public static bool operator >=(double left, Rational right) => left >= (double)right;
+
+    // Exact rational arithmetic (both operands reduced, denominators positive). These also make
+    // the struct composable inside a Where predicate: t.A + t.B == Rational.Of(3, 4) does not
+    // even compile without them. Inside the DSL the visitor only walks the tree; the bodies
+    // matter solely when the operator is evaluated in plain CLR. Arithmetic is checked: a
+    // product that leaves the long range throws OverflowException rather than silently wrapping
+    // (the contract of the built-in long operators). The constructor re-reduces and throws
+    // DivideByZeroException for a zero divisor.
+    public static Rational operator +(Rational left, Rational right) =>
+        new(checked(left.Numerator * right.Denominator + right.Numerator * left.Denominator), checked(left.Denominator * right.Denominator));
+
+    public static Rational operator -(Rational left, Rational right) =>
+        new(checked(left.Numerator * right.Denominator - right.Numerator * left.Denominator), checked(left.Denominator * right.Denominator));
+
+    public static Rational operator *(Rational left, Rational right) =>
+        new(checked(left.Numerator * right.Numerator), checked(left.Denominator * right.Denominator));
+
+    public static Rational operator /(Rational left, Rational right) =>
+        new(checked(left.Numerator * right.Denominator), checked(left.Denominator * right.Numerator));
+
+    public static Rational operator -(Rational value) => new(-value.Numerator, value.Denominator);
+
+    // Exact rational-to-rational comparison. Both denominators are strictly positive, so the
+    // ordering reduces to cross-multiplication; the products can leave the long range, so they
+    // are taken in BigInteger rather than through a lossy double fallback.
+    public static bool operator ==(Rational left, Rational right) => left.Equals(right);
+
+    public static bool operator !=(Rational left, Rational right) => !left.Equals(right);
+
+    public static bool operator <(Rational left, Rational right) =>
+        (BigInteger)left.Numerator * right.Denominator < (BigInteger)right.Numerator * left.Denominator;
+
+    public static bool operator <=(Rational left, Rational right) =>
+        (BigInteger)left.Numerator * right.Denominator <= (BigInteger)right.Numerator * left.Denominator;
+
+    public static bool operator >(Rational left, Rational right) =>
+        (BigInteger)left.Numerator * right.Denominator > (BigInteger)right.Numerator * left.Denominator;
+
+    public static bool operator >=(Rational left, Rational right) =>
+        (BigInteger)left.Numerator * right.Denominator >= (BigInteger)right.Numerator * left.Denominator;
 
     private static long Gcd(long a, long b)
     {

@@ -574,6 +574,16 @@ public class Theorem
         }
         else
         {
+            // A Rational member is a scalar real, not a complex object. Without this guard the
+            // TypeCode.Object fallthrough below decomposes it into Numerator/Denominator integer
+            // symbols with no Expr of its own, and any constraint over the member crashes with a
+            // NullReferenceException deep inside Microsoft.Z3 (MkGt on a null ArithExpr).
+            if (targetType == typeof(Rational))
+            {
+                toReturn.Expr = context.MkRealConst(prefix);
+                return toReturn;
+            }
+
             // Scalar leaf type: create a Z3 constant
             switch (Type.GetTypeCode(targetType))
             {
@@ -714,7 +724,21 @@ public class Theorem
         TypeCode typeCode = Type.GetTypeCode(parameterType);
         if (typeCode == TypeCode.Object)
         {
-            if (parameterType.IsArray || (parameterType.IsGenericType && typeof(IEnumerable).IsAssignableFrom(parameterType.GetGenericTypeDefinition())))
+            if (parameterType == typeof(Rational))
+            {
+                // A Rational member binds to a single real symbol (GetEnvironment): read it back
+                // as the exact fraction, rather than recursing into the complex-object
+                // construction path below, which has no environment members to work from.
+                // completion: an unconstrained real symbol carries no interpretation in the
+                // model; completion makes Z3 answer with its default (0) instead of handing
+                // back the unevaluated RealExpr.
+                value = ReadRational(
+                    (RatNum)model.Eval(subEnv.Expr ?? throw new ArgumentException(
+                        $"A Rational member requires {nameof(subEnv)}.{nameof(subEnv.Expr)} to be non-null",
+                        nameof(subEnv)), completion: true),
+                    parameter.Name);
+            }
+            else if (parameterType.IsArray || (parameterType.IsGenericType && typeof(IEnumerable).IsAssignableFrom(parameterType.GetGenericTypeDefinition())))
             {
                 // Delegate to ExtractCollection for both simple and nested array extraction
                 object? existingMember = parameter switch
@@ -857,6 +881,31 @@ public class Theorem
         }
 
         return (short)value;
+    }
+
+    /// <summary>
+    /// Reads a <see cref="Rational"/> symbol back from the exact fraction Z3 holds it as. The
+    /// constructor re-reduces, so a model like 2/4 materialises as 1/2.
+    /// </summary>
+    /// <remarks>
+    /// Real symbols are unbounded, so a satisfiable theorem can still choose a fraction whose
+    /// numerator or denominator no <see cref="long"/> can hold (<c>t.X &gt; 1e30</c> is
+    /// satisfiable in reals). The Z3 read would then throw naming neither the symbol nor the
+    /// remedy; this throws <see cref="OverflowException"/> naming both (mirroring
+    /// <see cref="ToDateTime"/> and <see cref="ToInt16"/>).
+    /// </remarks>
+    private static Rational ReadRational(RatNum val, string name)
+    {
+        try
+        {
+            return new Rational(val.Numerator.Int64, val.Denominator.Int64);
+        }
+        catch (Z3Exception)
+        {
+            throw new OverflowException(
+                $"The value Z3 chose for the rational symbol {name} has a numerator or denominator outside the Int64 range. " +
+                "Bound the member (e.g. Where(t => t.X < 1e6)) to keep the model in range.");
+        }
     }
 
     /// <summary>
@@ -1114,19 +1163,15 @@ public class Theorem
                 // Evaluation of the values though the handle in the environment bindings.
                 var subEnv = environment.Properties[parameter];
 
-                Expr val = model.Eval(subEnv.Expr);
-                if (parameter.PropertyType == typeof(bool))
-                {
-                    field.SetValue(result, val.IsTrue);
-                }
-                else if (parameter.PropertyType == typeof(int))
-                {
-                    field.SetValue(result, ((IntNum)val).Int);
-                }
-                else
-                {
-                    throw new NotSupportedException("Unsupported parameter type for " + parameter.Name + ".");
-                }
+                // Delegate scalar materialization to ConvertZ3Expression's full type dispatch
+                // (string, int16/32/64, DateTime, bool, single, decimal, double) instead of the
+                // former inline bool/int-only dispatch, which rejected anonymous types with
+                // double members -- notably the demo's oil purchase problem. destinationObject
+                // is only read for collection-valued members; anonymous environments are
+                // scalar-only, so the uninitialized instance is safe to pass.
+                // (Finding 2, MyIntelligenceAgency/Z3.Linq#35; measured at CoursIA #18770.)
+                var value = ConvertZ3Expression(result, context, model, subEnv, parameter);
+                field.SetValue(result, value);
             }
 
             return result;
