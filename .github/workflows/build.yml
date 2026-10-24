@@ -42,7 +42,10 @@ jobs:
       RESOLVED_SECRETS: ${{ steps.prepareEnvVarsAndSecrets.outputs.secretsYamlBase64 }}
     steps:
     # Declare any environment variables and/or secrets that need to be available inside the build process
-    - uses: endjin/Endjin.RecommendedPractices.GitHubActions/actions/prepare-env-vars-and-secrets@main
+    # Epingle par SHA (#41) : `@main` est une reference mutable, et une de ses
+    # dependances a deja casse `build / Package` sans qu'aucun commit du depot
+    # ne l'ait cause. SHA = main du 2026-10-24.
+    - uses: endjin/Endjin.RecommendedPractices.GitHubActions/actions/prepare-env-vars-and-secrets@16b26fe7201a52829351bd7cf550251678564cc4  # main @ 2026-10-24
       id: prepareEnvVarsAndSecrets
       with:
         environmentVariablesYaml: |
@@ -52,7 +55,9 @@ jobs:
 
   build:
     needs: prepareConfig
-    uses: endjin/Endjin.RecommendedPractices.GitHubActions/.github/workflows/scripted-build-pipeline.yml@main
+    # Meme epinglage que l'action ci-dessus (#41) : le pipeline reusable ne doit
+    # plus changer sous nos pieds entre deux PRs.
+    uses: endjin/Endjin.RecommendedPractices.GitHubActions/.github/workflows/scripted-build-pipeline.yml@16b26fe7201a52829351bd7cf550251678564cc4  # main @ 2026-10-24
     with:
       netSdkVersion: '8.x'
       # Microsoft.Z3 4.12.2 (last nuget.org release) ships native binaries for
