@@ -4,6 +4,30 @@
 
 > **Erratum du 2026-10-04 (G1 de l'EPIC #14169, mesure #16050)** — les colonnes « PR endjin candidate » ci-dessous ont été re-mesurées PR par PR contre les diffs réels ; le verdict détaillé et les preuves vivent dans [`OVERLAP_G1.md`](OVERLAP_G1.md). Claims **réfutés** par la mesure : « #74 équivalent à notre PB » (×3, le diff #74 est test-only amont — le PB fork est fork-original sans candidate amont) · « #96 équivalent MaxSAT soft » (collision de titres) · « #88 pas dans le fork » (présent : a54ba1b + 5ad0c7b) · « #92 pas dans le fork » (capacité présente, seul le single-mapping manque) · « #91 équivalent record envs » (défaut anonymous vivant, Theorem.cs:1114-1130) · « #93 équivalent default-fill » (le template de taillage n'existe pas). Mal étiqueté : row 4 (5ad0c7b est la contrepartie #88, pas #84 — la capacité #84 vient de 6eab957). Également re-mesuré ce jour : ahead = **54** (les 3 commits de doc inclus), PRs endjin ouvertes = 45 (28 du périmètre G1 + 16 nouvelles, tri dans OVERLAP_G1.md §7).
 
+## Mesure du 2026-10-25 (G4 du dispatch c1843, lane `myia-po-2023:CoursIA`)
+
+> Les trois PRs fork du lot #35/#39 (#37, #38, #40) ont été **re-mesurées à la pointe de la pile**, pas sur `main` amont : `b425802b72b3c5fc770e343d062a63bde7e68d08`, tête de endjin#110 (`feature/spectre-demos`), net10.0 / `Microsoft.Z3 5.1.0`. Instrument : une application console référençant chaque bibliothèque, **le même programme** sur notre base `8a2562d` (net8.0) et sur la pointe, `dotnet run -c Release` (SDK 10.0.113, Windows 11). Les sections datées ci-dessous ne sont pas réécrites.
+
+| PR fork | Sujet | État à la pointe `b425802b` | PR amont | Alignement du fork |
+|---|---|---|---|---|
+| **#37** | environnements `ValueTuple` (appariement de constructeur) | **supplanté** par la refonte `GetSolution` | **aucune** | supprimer le hunk ; `GetSolution` affecte les champs publics, `Item1..ItemN` en sont, donc l'appariement `item1`/`Item1` n'a plus lieu d'être (et l'arité ≥ 8 passe par le préfixe `ValueTuple\`8_Rest_Item1`) |
+| **#38** | marshaller propre aux types anonymes | **supplanté**, par la déduplication que la PR proposait | **aucune** | supprimer le hunk ; le commentaire amont nomme la cause historique et cite leur #75 ; le test `AnonymousType_DoubleMembers_AreReadBack` se re-porte tel quel (vert sans correctif) |
+| **#40** | `Rational` mappé sur `double` | **moitié symbole servie**, **moitié constante refusée** | **endjin#114** (ouverte le 2026-10-25, base `feature/spectre-demos`, +266/−7) | `Rational.cs` reste local ; la constante s'écrit `(Rational)0.75` une fois #114 mergée |
+
+Mesures, base `8a2562d` → pointe `b425802b` :
+
+| Cas | Base | Pointe |
+|---|---|---|
+| anonyme `{ double, double }` contraint | échec `Unsupported parameter type for price` | réussite `price=7 shipping=3,5` |
+| `ValueTuple (int x, int y)` arithmétique | échec `no constructor whose parameters match (Item1, Item2)` | réussite `x=3 y=1` |
+| `ValueTuple` arité 8 | échec (idem) | réussite `a=5 h=9` |
+| `Rational` mappé, membre non contraint | échec `InvalidCastException RealExpr→RatNum` | réussite |
+| `Rational` mappé, arithmétique entre membres | échec `InvalidCastException` | réussite |
+| `t.x + t.y == Rational.Of(0.75)` | échec `Unsupported constant 0,75` | échec `Unknown method call: Rational Of(Double)` (refus légitime, cf #114) |
+| `t.x + t.y == (Rational)0.75` | échec `Unsupported constant 0,75` | échec `Cast '…' to Rational` → **corrigé par #114** |
+
+**Ce que l'alignement ferait perdre — record positionnel.** `record PosInt(int a, int b)` fonctionne sur notre base et lève `MissingMethodException` sur la pointe. Ce n'est **pas** une régression subie : la pointe a retiré `ConstructFromModel` et **épingle le comportement** — `solutions/Z3.Linq.Tests/EnvironmentTypeTests.cs`, `Solve_PositionalRecordEnvironment_ThrowsMissingMethodException` (« records work, positional records do not »). Conséquence pour le fork : l'apport `2ea8fa0` (row 16 « record environments via ctor ») **n'a pas de ligne amont** ; s'il est encore consommé, il se conserve côté fork ou devient une demande amont explicite, il ne se perd pas dans un rebase.
+
 ## Résumé
 
 - **Fork** : `MyIntelligenceAgency/Z3.Linq` (`origin/main` = `fddd586`).
@@ -138,6 +162,6 @@ Aucun commit nouveau sur fichiers d'overlap (`Theorem.cs`, `ExpressionVisitor.cs
 
 - EPIC parent : #14169
 - G1 #16050 · G1-bis #16053 (PR #16070)
-- Amont : endjin/Z3.Linq#29, #43, #110, #111
+- Amont : endjin/Z3.Linq#29, #43, #110, #111, **#114** (mapping sur la cible d'une conversion, 2026-10-25)
 - Epic #1206
 - Issue CoursIA : #16609
