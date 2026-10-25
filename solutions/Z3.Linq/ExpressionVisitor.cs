@@ -715,10 +715,17 @@ internal sealed class ExpressionVisitor
                 {
                     var currentMember = hierarchy[hierarchyIdx].Member;
 
+                    // Each level is read off the previous level's value, not off the constant: a
+                    // captured local can be nested more than one closure deep. Roslyn gives a loop
+                    // body its own display class inside the method's, so a lambda that captures
+                    // both a method parameter and a loop variable reaches its outer value through
+                    // two fields - and reading every level off the constant fails on the second
+                    // with "field ... is not a field on the target object". A property chain on a
+                    // captured instance, obj.Limit.Value, has the same shape.
                     val = currentMember switch
                     {
-                        PropertyInfo property => property.GetValue(target),
-                        FieldInfo field => field.GetValue(target),
+                        PropertyInfo property => property.GetValue(val),
+                        FieldInfo field => field.GetValue(val),
                         _ => throw new NotSupportedException($"Unsupported constant {target} ."),
                     };
 
