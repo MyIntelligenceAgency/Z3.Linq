@@ -41,4 +41,66 @@ public static class Z3Methods
     {
         throw new NotSupportedException("This method should only be used in query expressions.");
     }
+
+    /// <summary>
+    /// Creates a predicate stating that exactly one of the given indicators holds.
+    /// </summary>
+    /// <param name="indicators">Boolean indicators, exactly one of which must be true.</param>
+    /// <returns>Predicate return value.</returns>
+    /// <remarks>
+    /// <para>
+    /// This method should only be used within LINQ expressions. It maps to a single pseudo-Boolean
+    /// constraint rather than to the quadratic pairwise encoding.
+    /// </para>
+    /// <para>
+    /// Its point is a cardinality constraint whose length is not known when the constraint is
+    /// written, such as one indicator per cell of a variable-size group.
+    /// </para>
+    /// </remarks>
+    public static bool ExactlyOne(params bool[] indicators)
+    {
+        throw new NotSupportedException("This method should only be used in query expressions.");
+    }
+
+    /// <summary>
+    /// Creates a predicate stating that at most one of the given indicators holds.
+    /// </summary>
+    /// <param name="indicators">Boolean indicators, at most one of which may be true.</param>
+    /// <returns>Predicate return value.</returns>
+    /// <remarks>
+    /// <para>
+    /// This method should only be used within LINQ expressions. It maps to a single pseudo-Boolean
+    /// constraint, encoded as "at least n-1 of the negated indicators".
+    /// </para>
+    /// <para>
+    /// Its point is the same as <see cref="ExactlyOne"/>'s: a cardinality constraint over a group
+    /// whose size is a runtime value. This is the constraint that rules out two values sharing a
+    /// group, the usual shape of a Latin-square or Sudoku column.
+    /// </para>
+    /// </remarks>
+    public static bool AtMostOne(params bool[] indicators)
+    {
+        throw new NotSupportedException("This method should only be used in query expressions.");
+    }
+
+    /// <summary>
+    /// Creates a predicate stating that at least one of the given indicators holds.
+    /// </summary>
+    /// <param name="indicators">Boolean indicators, at least one of which must be true.</param>
+    /// <returns>Predicate return value.</returns>
+    /// <remarks>
+    /// <para>
+    /// This method should only be used within LINQ expressions. It maps to a single pseudo-Boolean
+    /// constraint, which stays linear where a disjunction over the same indicators would be one
+    /// <c>or</c> node of n children.
+    /// </para>
+    /// <para>
+    /// Its point is the same as <see cref="ExactlyOne"/>'s: a cardinality constraint over a group
+    /// whose size is a runtime value.
+    /// </para>
+    /// </remarks>
+    public static bool AtLeastOne(params bool[] indicators)
+    {
+        throw new NotSupportedException("This method should only be used in query expressions.");
+    }
 }

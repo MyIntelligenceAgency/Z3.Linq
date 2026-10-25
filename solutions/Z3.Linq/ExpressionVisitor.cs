@@ -28,6 +28,15 @@ internal sealed class ExpressionVisitor
     /// <summary>The generic definition of <see cref="Z3Methods.Sum{T}"/>, cached for the call-site match.</summary>
     private static readonly MethodInfo SumMethod = typeof(Z3Methods).GetMethod(nameof(Z3Methods.Sum))!;
 
+    /// <summary>The definition of <see cref="Z3Methods.ExactlyOne"/>, cached for the call-site match.</summary>
+    private static readonly MethodInfo ExactlyOneMethod = typeof(Z3Methods).GetMethod(nameof(Z3Methods.ExactlyOne))!;
+
+    /// <summary>The definition of <see cref="Z3Methods.AtMostOne"/>, cached for the call-site match.</summary>
+    private static readonly MethodInfo AtMostOneMethod = typeof(Z3Methods).GetMethod(nameof(Z3Methods.AtMostOne))!;
+
+    /// <summary>The definition of <see cref="Z3Methods.AtLeastOne"/>, cached for the call-site match.</summary>
+    private static readonly MethodInfo AtLeastOneMethod = typeof(Z3Methods).GetMethod(nameof(Z3Methods.AtLeastOne))!;
+
     /// <summary>The generic definition of <see cref="Enumerable.ToArray{TSource}"/>, cached for the call-site match.</summary>
     private static readonly MethodInfo EnumerableToArrayMethod =
         typeof(Enumerable).GetMethods().First(m => m.Name == nameof(Enumerable.ToArray));
@@ -555,65 +564,15 @@ internal sealed class ExpressionVisitor
             return Visit(result);
         }
 
-        // Filter for known Z3 operators: the variadic "magic methods". Both take a params array, so
-        // they share the argument extraction below and differ only in the term built from it.
+        // The variadic "magic methods" - Distinct, Sum, and the pseudo-Boolean trio - all take a
+        // params array, so they share the argument extraction and differ only in the term built
+        // from the materialised arguments.
         bool isDistinct = method.IsGenericMethod && method.GetGenericMethodDefinition() == DistinctMethod;
         bool isSum = method.IsGenericMethod && method.GetGenericMethodDefinition() == SumMethod;
 
         if (isDistinct || isSum)
         {
-            // We know the signature of the method call. Its argument is a params
-            // array, hence we expect a NewArrayExpression.
-            IEnumerable? distinctExps = null;
-
-            var itemsExpression = call.Arguments[0];
-            if (itemsExpression is MethodCallExpression mExp)
-            {
-                if (mExp.Method.IsGenericMethod && mExp.Method.GetGenericMethodDefinition() == EnumerableToArrayMethod)
-                {
-                    var callerToArrayExp = mExp.Arguments[0];
-                    if (callerToArrayExp is MethodCallExpression callerToArrayMethodExp)
-                    {
-                        if (callerToArrayMethodExp.Method.IsGenericMethod && callerToArrayMethodExp.Method.GetGenericMethodDefinition() == EnumerableSelectMethod)
-                        {
-                            var caller = (ICollection)ExpressionInterpreter.Instance.Interpret(callerToArrayMethodExp.Arguments[0]);
-                            var arg = callerToArrayMethodExp.Arguments[1] as LambdaExpression;
-                            var subExps = new List<Expression>(caller.Count);
-
-                            foreach (var item in caller)
-                            {
-                                var substitutedExpression = ParameterSubstituter.SubstituteParameter(arg, Expression.Constant(item));
-
-                                // SubstituteParameter yields the selector's body, which is not a
-                                // lambda, but from 1.3.0 PartialEval only accepts a LambdaExpression.
-                                // Wrapping the body in a lambda and taking the partially evaluated
-                                // Body back off is the supported equivalent of the overload that
-                                // used to take a bare Expression. The body still references the
-                                // theorem's own parameter, which stays free in the wrapper - the
-                                // evaluator leaves parameter-dependent subtrees alone and folds
-                                // only the closed ones, exactly as before.
-                                var wrappedExpression = Expression.Lambda(substitutedExpression);
-                                var newlyFlattened = PartialEvaluator.PartialEval(wrappedExpression, ExpressionInterpreter.Instance).Body;
-                                subExps.Add(newlyFlattened);
-                            }
-
-                            distinctExps = subExps;
-                        }
-                    }
-                }
-            }
-            else
-            {
-                if (itemsExpression is NewArrayExpression arrExp)
-                {
-                    distinctExps = arrExp.Expressions;
-                }
-            }
-
-            if (distinctExps == null)
-            {
-                throw new NotSupportedException("Unsupported method call: " + method.ToString() + " with sub expression " + call.Arguments[0].ToString());
-            }
+            IEnumerable<Expression> distinctExps = MaterializeVariadicArguments(call, method);
 
             IEnumerable<Expr> args = from Expression arg in distinctExps
                                      select Visit(arg);
@@ -626,6 +585,55 @@ internal sealed class ExpressionVisitor
             // Sum -> one addition over the materialised terms. MkAdd is variadic, so the sum of any
             // number of terms is a single node rather than a fold of pairwise additions.
             return this.context.MkAdd(args.Cast<ArithExpr>().ToArray());
+        }
+
+        // The pseudo-Boolean trio. Each takes a params bool[] because PB indicators have to be
+        // Boolean, and each maps onto native PB: sum(indicators) >= 1 for at-least-one,
+        // sum(not indicators) >= n - 1 for at-most-one, and both for exactly-one. Native PB keeps
+        // Z3's own propagation, where an Ite-and-add expansion does not.
+        if (method == ExactlyOneMethod || method == AtMostOneMethod || method == AtLeastOneMethod)
+        {
+            // An empty params array is legal at the call site; MaterializeVariadicArguments reads it
+            // off the NewArrayExpression like any other literal.
+            List<BoolExpr> indicators = [];
+
+            foreach (Expression argument in MaterializeVariadicArguments(call, method))
+            {
+                indicators.Add(Visit(argument) as BoolExpr ?? throw new InvalidOperationException(
+                    $"Z3Methods.{method.Name} indicators must be Boolean, got {argument.NodeType}."));
+            }
+
+            int count = indicators.Count;
+
+            // The degenerate cases are decided, not translated: nothing can make one of zero
+            // indicators true, and at most one of zero is vacuously true.
+            if (count == 0)
+            {
+                return method == AtMostOneMethod ? this.context.MkTrue() : this.context.MkFalse();
+            }
+
+            int[] weights = new int[count];
+            Array.Fill(weights, 1);
+
+            if (method == AtLeastOneMethod)
+            {
+                return this.context.MkPBGe(weights, indicators.ToArray(), 1);
+            }
+
+            BoolExpr[] negated = new BoolExpr[count];
+            for (int i = 0; i < count; i++)
+            {
+                negated[i] = this.context.MkNot(indicators[i]);
+            }
+
+            if (method == AtMostOneMethod)
+            {
+                return this.context.MkPBGe(weights, negated, count - 1);
+            }
+
+            return this.context.MkAnd(
+                this.context.MkPBGe(weights, indicators.ToArray(), 1),
+                this.context.MkPBGe(weights, negated, count - 1));
         }
 
         if (method.Name.StartsWith("get_"))
@@ -645,6 +653,74 @@ internal sealed class ExpressionVisitor
         }
 
         throw new NotSupportedException("Unknown method call:" + method.ToString());
+    }
+
+    /// <summary>
+    /// Materialises the arguments of a variadic magic method into the expressions they stand for.
+    /// </summary>
+    /// <param name="call">The call to the magic method.</param>
+    /// <param name="method">The method being called, for the diagnostics.</param>
+    /// <returns>One expression per argument.</returns>
+    /// <remarks>
+    /// A <c>params</c> argument arrives in one of two shapes: a <see cref="NewArrayExpression"/>,
+    /// when the arguments are written out at the call site, or <c>Select(...).ToArray()</c> over a
+    /// collection, when they are computed. The second is expanded here, one substituted-and-folded
+    /// body per element, so the caller sees a flat list either way.
+    /// </remarks>
+    /// <exception cref="NotSupportedException">The argument has neither shape.</exception>
+    private static IEnumerable<Expression> MaterializeVariadicArguments(MethodCallExpression call, MethodInfo method)
+    {
+        var itemsExpression = call.Arguments[0];
+
+        if (itemsExpression is NewArrayExpression arrExp)
+        {
+            return arrExp.Expressions;
+        }
+
+        if (itemsExpression is MethodCallExpression mExp
+            && mExp.Method.IsGenericMethod
+            && mExp.Method.GetGenericMethodDefinition() == EnumerableToArrayMethod
+            && mExp.Arguments[0] is MethodCallExpression callerToArrayMethodExp
+            && callerToArrayMethodExp.Method.IsGenericMethod
+            && callerToArrayMethodExp.Method.GetGenericMethodDefinition() == EnumerableSelectMethod)
+        {
+            var selector = callerToArrayMethodExp.Arguments[1] as LambdaExpression
+                ?? throw new NotSupportedException("Unsupported method call: " + method + " with a non-lambda selector.");
+
+            // The source is any IEnumerable, not only an ICollection: Enumerable.Range, a Where
+            // clause and a Select over either are all lazy, and none of them implements ICollection.
+            // Concretising it once keeps the count and the walk consistent, and each element then
+            // becomes a Constant the selector's parameter can be substituted with.
+            object? source = ExpressionInterpreter.Instance.Interpret(callerToArrayMethodExp.Arguments[0]);
+
+            if (source is not IEnumerable items)
+            {
+                throw new NotSupportedException("Unsupported method call: " + method + " over a source that is not enumerable.");
+            }
+
+            var caller = items.Cast<object>().ToList();
+            var subExps = new List<Expression>(caller.Count);
+
+            foreach (var item in caller)
+            {
+                var substitutedExpression = ParameterSubstituter.SubstituteParameter(selector, Expression.Constant(item));
+
+                // SubstituteParameter yields the selector's body, which is not a lambda, but from
+                // 1.3.0 PartialEval only accepts a LambdaExpression. Wrapping the body in a lambda
+                // and taking the partially evaluated Body back off is the supported equivalent of
+                // the overload that used to take a bare Expression. The body still references the
+                // theorem's own parameter, which stays free in the wrapper - the evaluator leaves
+                // parameter-dependent subtrees alone and folds only the closed ones, exactly as
+                // before.
+                var wrappedExpression = Expression.Lambda(substitutedExpression);
+                var newlyFlattened = PartialEvaluator.PartialEval(wrappedExpression, ExpressionInterpreter.Instance).Body;
+                subExps.Add(newlyFlattened);
+            }
+
+            return subExps;
+        }
+
+        throw new NotSupportedException("Unsupported method call: " + method + " with sub expression " + itemsExpression);
     }
 
     /// <summary>
