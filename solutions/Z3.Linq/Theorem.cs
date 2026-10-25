@@ -174,10 +174,10 @@ public class Theorem
 
         // A soft constraint needs an optimizer: AssertSoft defines an implicit objective - minimise
         // the total weight left unsatisfied - that a solver has nowhere to put. A theorem without
-        // any soft constraint keeps the plain solver.
+        // any soft constraint takes the solver the context is configured to build.
         Z3Object approach = this.softConstraints.Any()
             ? ctx.MkOptimize()
-            : ctx.MkSolver();
+            : this.context.CreateSolver(ctx);
 
         AssertConstraints<T>(ctx, approach, environment);
 

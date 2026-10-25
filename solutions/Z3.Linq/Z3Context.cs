@@ -105,6 +105,48 @@ public sealed class Z3Context : IDisposable
     public CollectionHandling DefaultCollectionHandling { get; set; } = CollectionHandling.Array;
 
     /// <summary>
+    /// Gets or sets which Z3 solver the theorems of this context are checked with.
+    /// </summary>
+    /// <remarks>
+    /// Overridden by <see cref="Tactics"/> when that is non-empty, and ignored by the two paths
+    /// that need an object other than a solver: the optimizer a soft constraint needs, and the
+    /// diagnostic path, which needs the hypothesis tracking a combined solver provides.
+    /// </remarks>
+    public SolverKind SolverKind { get; set; } = SolverKind.Default;
+
+    /// <summary>
+    /// Gets or sets the SMT-LIB logic name (<c>"QF_LIA"</c>, <c>"QF_BV"</c>, ...) used when
+    /// <see cref="SolverKind"/> is <see cref="SolverKind.Logic"/>.
+    /// </summary>
+    /// <remarks>Ignored for every other solver kind.</remarks>
+    public string? Logic { get; set; }
+
+    /// <summary>
+    /// Gets or sets an ordered list of Z3 tactic names composed left to right, whose solver is used
+    /// instead of the one <see cref="SolverKind"/> selects.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A tactic sequence already ends in a decision procedure, so it takes precedence over
+    /// <see cref="SolverKind"/>: layering the two would be a no-op at best. Names are Z3's own -
+    /// <c>"simplify"</c>, <c>"solve-eqs"</c>, <c>"smt"</c>, <c>"bit-blast"</c>, <c>"sat"</c>,
+    /// <c>"qfbv"</c> - and an unknown one throws
+    /// <see cref="Microsoft.Z3.Z3Exception"/> from Z3 when the solver is built. The available names
+    /// are what <c>Context.TacticNames</c> enumerates.
+    /// </para>
+    /// <para>
+    /// This is the surface that lets a caller drive the strategy a plain solver picks
+    /// heuristically: simplification, equality propagation, bit-blasting to SAT.
+    /// </para>
+    /// </remarks>
+    /// <example>
+    /// <code>
+    /// using var ctx = new Z3Context { Tactics = ["simplify", "bit-blast", "sat"] };
+    /// </code>
+    /// </example>
+    public IReadOnlyList<string>? Tactics { get; set; }
+
+    /// <summary>
     /// Closes the native resources held by the Z3 theorem prover.
     /// </summary>
     public void Dispose()
@@ -201,6 +243,56 @@ public sealed class Z3Context : IDisposable
         }
 
         return limits;
+    }
+
+    /// <summary>
+    /// Builds the solver a theorem of this context is checked with, from
+    /// <see cref="Tactics"/> when that is set, and from <see cref="SolverKind"/> and
+    /// <see cref="Logic"/> otherwise.
+    /// </summary>
+    /// <param name="context">The native context the solver is built in.</param>
+    /// <returns>The configured solver.</returns>
+    /// <exception cref="InvalidOperationException">
+    /// <see cref="SolverKind"/> is <see cref="SolverKind.Logic"/> and <see cref="Logic"/> is not
+    /// set - Z3 would otherwise silently build the general-purpose solver instead.
+    /// </exception>
+    internal Solver CreateSolver(Context context)
+    {
+        if (this.Tactics is { Count: > 0 })
+        {
+            return context.MkSolver(ComposeTactics(context));
+        }
+
+        return this.SolverKind switch
+        {
+            SolverKind.Simple => context.MkSimpleSolver(),
+            SolverKind.Logic when string.IsNullOrEmpty(this.Logic) => throw new InvalidOperationException(
+                $"{nameof(SolverKind)}.{nameof(SolverKind.Logic)} requires {nameof(Logic)} to be set to an "
+                + "SMT-LIB logic name, e.g. \"QF_LIA\"."),
+            SolverKind.Logic => context.MkSolver(this.Logic!),
+            _ => context.MkSolver(),
+        };
+    }
+
+    /// <summary>
+    /// Composes <see cref="Tactics"/> into a single tactic, left to right.
+    /// </summary>
+    /// <param name="context">The native context each tactic is built in.</param>
+    /// <returns>The composed tactic.</returns>
+    /// <remarks>
+    /// <c>AndThen</c> needs at least two tactics, so a one-element sequence is returned as it is
+    /// rather than wrapped in a composite of one.
+    /// </remarks>
+    private Tactic ComposeTactics(Context context)
+    {
+        var names = this.Tactics!;
+        if (names.Count == 1)
+        {
+            return context.MkTactic(names[0]);
+        }
+
+        Tactic[] built = names.Select(context.MkTactic).ToArray();
+        return context.AndThen(built[0], built[1], built[2..]);
     }
 
     /// <summary>
