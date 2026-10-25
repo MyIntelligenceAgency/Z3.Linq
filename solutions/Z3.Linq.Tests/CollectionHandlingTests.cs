@@ -23,6 +23,84 @@ namespace Z3.Linq.Tests;
 public class CollectionHandlingTests
 {
     /// <summary>
+    /// A 4x4 Sudoku grid modelled as <c>int[][]</c>: a nested collection, one row per element, in
+    /// both modes.
+    /// </summary>
+    public class SudokuGrid4
+    {
+        /// <summary>
+        /// Gets or sets the cells of the grid, four rows of four.
+        /// </summary>
+        public int[][] Cells { get; set; } = [new int[4], new int[4], new int[4], new int[4]];
+    }
+
+    private static Theorem<SudokuGrid4> BuildNestedSudoku4x4(Z3Context ctx)
+    {
+        var theorem = ctx.NewTheorem<SudokuGrid4>();
+
+        for (int i = 0; i < 4; i++)
+        {
+            for (int j = 0; j < 4; j++)
+            {
+                int row = i, column = j;
+                theorem = theorem.Where(g => g.Cells[row][column] >= 1 && g.Cells[row][column] <= 4);
+            }
+        }
+
+        for (int r = 0; r < 4; r++)
+        {
+            int row = r;
+            theorem = theorem.Where(g => Z3Methods.Distinct(
+                g.Cells[row][0], g.Cells[row][1], g.Cells[row][2], g.Cells[row][3]));
+        }
+
+        for (int c = 0; c < 4; c++)
+        {
+            int column = c;
+            theorem = theorem.Where(g => Z3Methods.Distinct(
+                g.Cells[0][column], g.Cells[1][column], g.Cells[2][column], g.Cells[3][column]));
+        }
+
+        return theorem;
+    }
+
+    [TestMethod]
+    [DataRow(CollectionHandling.Array)]
+    [DataRow(CollectionHandling.Constants)]
+    public void NestedGrid_IsSolvable_InBothModes(CollectionHandling mode)
+    {
+        using var ctx = new Z3Context { DefaultCollectionHandling = mode };
+
+        var solution = BuildNestedSudoku4x4(ctx).Solve();
+
+        solution.ShouldNotBeNull();
+
+        foreach (int[] row in solution!.Cells)
+        {
+            row.OrderBy(v => v).ShouldBe([1, 2, 3, 4]);
+        }
+
+        for (int c = 0; c < 4; c++)
+        {
+            int column = c;
+            Enumerable.Range(0, 4).Select(r => solution.Cells[r][column]).OrderBy(v => v).ShouldBe([1, 2, 3, 4]);
+        }
+    }
+
+    [TestMethod]
+    [DataRow(CollectionHandling.Array)]
+    [DataRow(CollectionHandling.Constants)]
+    public void NestedGrid_RespectsHint_InBothModes(CollectionHandling mode)
+    {
+        using var ctx = new Z3Context { DefaultCollectionHandling = mode };
+
+        var solution = BuildNestedSudoku4x4(ctx).Where(g => g.Cells[1][2] == 3).Solve();
+
+        solution.ShouldNotBeNull();
+        solution!.Cells[1][2].ShouldBe(3);
+    }
+
+    /// <summary>
     /// A 4x4 Sudoku grid held in a flat <c>int[16]</c>: the smallest CSP that exercises both modes
     /// with more than a handful of symbols.
     /// </summary>
