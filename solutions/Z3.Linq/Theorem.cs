@@ -409,8 +409,10 @@ public class Theorem
     /// <returns>The status Z3 reports.</returns>
     /// <remarks>
     /// The diagnostic path needs the raw status: "could not decide" is one of the outcomes it
-    /// reports, not a failure of the call. Everything the two paths share - the limits from the
-    /// <see cref="Z3Context"/>, the registration of the token on
+    /// reports, not a failure of the call. Everything the two paths share - the parameters from the
+    /// <see cref="Z3Context"/> (its limits and any <see cref="Z3Context.SetParameter(string, uint)"/>
+    /// given), the
+    /// registration of the token on
     /// <see cref="Microsoft.Z3.Context.Interrupt"/> - lives here so the two cannot drift.
     /// </remarks>
     private Status CheckStatus(Context ctx, Z3Object approach, CancellationToken cancellationToken)
@@ -418,17 +420,17 @@ public class Theorem
         cancellationToken.ThrowIfCancellationRequested();
 
         // Disposed when this method returns, after the check has run: Params is native-backed, and
-        // the solver has copied what it needs by the time Check completes. A null (no limits set)
-        // is a no-op to dispose.
-        using Params? limits = this.context.CreateLimits(ctx);
+        // the solver has copied what it needs by the time Check completes. A null (nothing set) is
+        // a no-op to dispose.
+        using Params? parameters = this.context.CreateSolverParameters(ctx);
 
         switch (approach)
         {
-            case Solver solver when limits is not null:
-                solver.Parameters = limits;
+            case Solver solver when parameters is not null:
+                solver.Parameters = parameters;
                 break;
-            case Optimize optimizer when limits is not null:
-                optimizer.Parameters = limits;
+            case Optimize optimizer when parameters is not null:
+                optimizer.Parameters = parameters;
                 break;
         }
 
@@ -902,6 +904,16 @@ public class Theorem
             string name = prefix;
             TypeCode typeCode = Type.GetTypeCode(parameterType);
 
+            // A member declared as a bit-vector is a bit-vector constant whatever its CLR type is:
+            // the declared width, not the type, fixes the sort. Intercepted before the type-based
+            // mapping so the declared width always wins, and never for an array element, whose sort
+            // is the array's range and not the member's own.
+            if (parameter.GetCustomAttributes<BitVecWidthAttribute>(false).SingleOrDefault() is { } bitVecWidth)
+            {
+                toReturn.Expr = context.MkBVConst(name, bitVecWidth.Width);
+                return toReturn;
+            }
+
             if (typeCode == TypeCode.Object)
             {
                 return GetEnvironment(context, parameterType, prefix);
@@ -1221,12 +1233,12 @@ public class Theorem
         return typeCode switch
         {
             TypeCode.String => expr.String,
-            TypeCode.Int16 => checked((short)((IntNum)expr).Int),
-            TypeCode.SByte => checked((sbyte)((IntNum)expr).Int),
-            TypeCode.Byte => checked((byte)((IntNum)expr).Int),
-            TypeCode.UInt16 => checked((ushort)((IntNum)expr).Int),
-            TypeCode.Int32 => ((IntNum)expr).Int,
-            TypeCode.Int64 => ((IntNum)expr).Int64,
+            TypeCode.Int16 => checked((short)ReadIntegral(expr)),
+            TypeCode.SByte => checked((sbyte)ReadIntegral(expr)),
+            TypeCode.Byte => checked((byte)ReadIntegral(expr)),
+            TypeCode.UInt16 => checked((ushort)ReadIntegral(expr)),
+            TypeCode.Int32 => checked((int)ReadIntegral(expr)),
+            TypeCode.Int64 => ReadIntegral(expr),
             TypeCode.UInt32 => (uint)((BitVecNum)expr).UInt64,
             TypeCode.UInt64 => ((BitVecNum)expr).UInt64,
             TypeCode.DateTime => ToDateTime(((IntNum)expr).Int64, symbolName),
@@ -1238,6 +1250,24 @@ public class Theorem
                 ? "Unsupported parameter type for " + symbolName + "."
                 : $"Unsupported array parameter type for {symbolName} and array element type {elementType.Name}."),
         };
+    }
+
+    /// <summary>
+    /// Reads an integral model value, which the integer theory and the bit-vector theory present as
+    /// two different node types.
+    /// </summary>
+    /// <param name="expr">The model value.</param>
+    /// <returns>The value, as a 64-bit integer.</returns>
+    /// <remarks>
+    /// A member declared with <see cref="BitVecWidthAttribute"/> surfaces as a
+    /// <see cref="BitVecNum"/>, which is not an <see cref="IntNum"/> - casting it as one throws. A
+    /// bit-vector is read through its unsigned value: the declared width already bounds it, and the
+    /// unsigned reading is what makes a modular result (a wrapped sum, say) report the number the
+    /// bit pattern denotes rather than an out-of-range signed one.
+    /// </remarks>
+    private static long ReadIntegral(Expr expr)
+    {
+        return expr is BitVecNum bitVector ? (long)bitVector.UInt64 : ((IntNum)expr).Int64;
     }
 
     /// <summary>

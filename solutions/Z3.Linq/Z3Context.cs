@@ -1,9 +1,10 @@
-﻿namespace Z3.Linq;
+namespace Z3.Linq;
 
 using Microsoft.Z3;
 
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 
 /// <summary>
@@ -16,6 +17,30 @@ public sealed class Z3Context : IDisposable
     /// Z3 configuration object.
     /// </summary>
     private readonly Dictionary<string, string> config;
+
+    /// <summary>
+    /// The solver parameters set through <see cref="SetParameter(string, uint)"/>, applied to every
+    /// solver this context builds.
+    /// </summary>
+    private readonly Dictionary<string, SolverParameter> solverParameters = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// The type Z3 declares for a solver parameter, and therefore the type it must be given as.
+    /// </summary>
+    private enum ParameterKind
+    {
+        /// <summary>A symbol, the form Z3's own parameter output uses.</summary>
+        Symbol,
+
+        /// <summary>An unsigned integer.</summary>
+        Unsigned,
+
+        /// <summary>A Boolean.</summary>
+        Boolean,
+
+        /// <summary>A real.</summary>
+        Real,
+    }
 
     /// <summary>
     /// Creates a new Z3 context for theorem proving.
@@ -147,6 +172,81 @@ public sealed class Z3Context : IDisposable
     public IReadOnlyList<string>? Tactics { get; set; }
 
     /// <summary>
+    /// Sets a Z3 <em>solver</em> parameter, such as <c>random_seed</c> or <c>phase_selection</c>, to
+    /// be applied to every solver this context builds.
+    /// </summary>
+    /// <param name="name">The Z3 parameter name.</param>
+    /// <param name="value">Its value, as the type Z3 declares for that parameter.</param>
+    /// <returns>The same context, so calls can be chained.</returns>
+    /// <remarks>
+    /// <para>
+    /// These are the parameters of Z3's solver, applied per check like <see cref="Timeout"/> and
+    /// <see cref="ResourceLimit"/>, so changing one affects the next solve rather than a context
+    /// already in use. That is deliberately not the <em>global</em> configuration: Z3's global
+    /// parameters are a different, much smaller set, and a name such as <c>random_seed</c> is
+    /// rejected there with a printed warning rather than applied.
+    /// </para>
+    /// <para>
+    /// The value is typed because Z3 types its parameters: <c>random_seed</c> takes an unsigned
+    /// integer, and handing it a symbol fails when the solver is configured. The four overloads
+    /// cover the four types Z3 accepts, so the caller states the type rather than having this
+    /// library guess one from the text.
+    /// </para>
+    /// <para>
+    /// An unknown name is Z3's to reject, when the solver is checked, rather than silently ignored
+    /// here: the set of parameters is Z3's, and enumerating it in this library would go stale.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentException"><paramref name="name"/> is empty or white space.</exception>
+    /// <example>
+    /// <code>
+    /// using var ctx = new Z3Context().SetParameter("random_seed", 42u);
+    /// </code>
+    /// </example>
+    public Z3Context SetParameter(string name, uint value)
+    {
+        return this.SetParameter(name, ParameterKind.Unsigned, value.ToString(CultureInfo.InvariantCulture));
+    }
+
+    /// <summary>
+    /// Sets a Z3 solver parameter that takes a Boolean. See
+    /// <see cref="SetParameter(string, uint)"/>.
+    /// </summary>
+    /// <param name="name">The Z3 parameter name.</param>
+    /// <param name="value">Its value.</param>
+    /// <returns>The same context, so calls can be chained.</returns>
+    /// <exception cref="ArgumentException"><paramref name="name"/> is empty or white space.</exception>
+    public Z3Context SetParameter(string name, bool value)
+    {
+        return this.SetParameter(name, ParameterKind.Boolean, value.ToString());
+    }
+
+    /// <summary>
+    /// Sets a Z3 solver parameter that takes a real. See <see cref="SetParameter(string, uint)"/>.
+    /// </summary>
+    /// <param name="name">The Z3 parameter name.</param>
+    /// <param name="value">Its value.</param>
+    /// <returns>The same context, so calls can be chained.</returns>
+    /// <exception cref="ArgumentException"><paramref name="name"/> is empty or white space.</exception>
+    public Z3Context SetParameter(string name, double value)
+    {
+        return this.SetParameter(name, ParameterKind.Real, value.ToString("R", CultureInfo.InvariantCulture));
+    }
+
+    /// <summary>
+    /// Sets a Z3 solver parameter that takes a symbol - the form Z3's own output uses, such as
+    /// <c>restart_strategy=luby</c>. See <see cref="SetParameter(string, uint)"/>.
+    /// </summary>
+    /// <param name="name">The Z3 parameter name.</param>
+    /// <param name="value">Its value, as a symbol name.</param>
+    /// <returns>The same context, so calls can be chained.</returns>
+    /// <exception cref="ArgumentException"><paramref name="name"/> is empty or white space.</exception>
+    public Z3Context SetParameter(string name, string value)
+    {
+        return this.SetParameter(name, ParameterKind.Symbol, value);
+    }
+
+    /// <summary>
     /// Closes the native resources held by the Z3 theorem prover.
     /// </summary>
     public void Dispose()
@@ -210,22 +310,47 @@ public sealed class Z3Context : IDisposable
     }
 
     /// <summary>
-    /// The solver parameters carrying <see cref="Timeout"/> and <see cref="ResourceLimit"/>, or
-    /// <see langword="null"/> when neither is set.
+    /// Records a solver parameter, after checking the name the four overloads share.
+    /// </summary>
+    /// <param name="name">The Z3 parameter name.</param>
+    /// <param name="kind">The type Z3 declares for the parameter.</param>
+    /// <param name="value">Its value, in the textual form the kind is parsed from.</param>
+    /// <returns>The same context, so calls can be chained.</returns>
+    /// <exception cref="ArgumentException"><paramref name="name"/> is empty or white space.</exception>
+    private Z3Context SetParameter(string name, ParameterKind kind, string value)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            throw new ArgumentException("A parameter name is required.", nameof(name));
+        }
+
+        this.solverParameters[name] = new SolverParameter(kind, value);
+        return this;
+    }
+
+    /// <summary>
+    /// The solver parameters carrying <see cref="Timeout"/>, <see cref="ResourceLimit"/> and
+    /// whatever <see cref="SetParameter(string, uint)"/> was given, or <see langword="null"/> when
+    /// none is set.
     /// </summary>
     /// <param name="context">The native context the parameters are created in.</param>
     /// <remarks>
-    /// Applied per solver rather than through the context configuration, so that a limit is a
+    /// Applied per solver rather than through the context configuration, so that a parameter is a
     /// property of the <see cref="Z3Context"/> that can be changed between solves.
     /// </remarks>
-    internal Params? CreateLimits(Context context)
+    internal Params? CreateSolverParameters(Context context)
     {
-        if (this.Timeout is null && this.ResourceLimit is null)
+        if (this.Timeout is null && this.ResourceLimit is null && this.solverParameters.Count == 0)
         {
             return null;
         }
 
-        Params limits = context.MkParams();
+        Params parameters = context.MkParams();
+
+        foreach (KeyValuePair<string, SolverParameter> parameter in this.solverParameters)
+        {
+            parameter.Value.Apply(parameters, parameter.Key);
+        }
 
         if (this.Timeout is { } t)
         {
@@ -234,15 +359,15 @@ public sealed class Z3Context : IDisposable
             // a caller who asked for a tiny timeout would silently get none. Ceiling keeps any
             // positive timeout at least one millisecond, and stays within uint (the setter bounds
             // the value at uint.MaxValue milliseconds).
-            limits.Add("timeout", (uint)Math.Ceiling(t.TotalMilliseconds));
+            parameters.Add("timeout", (uint)Math.Ceiling(t.TotalMilliseconds));
         }
 
         if (this.ResourceLimit is { } r)
         {
-            limits.Add("rlimit", r);
+            parameters.Add("rlimit", r);
         }
 
-        return limits;
+        return parameters;
     }
 
     /// <summary>
@@ -302,5 +427,37 @@ public sealed class Z3Context : IDisposable
     internal void LogWriteLine(string s)
     {
         Log?.WriteLine(s);
+    }
+
+    /// <summary>
+    /// A solver parameter, held as the value Z3 is given along with the type it is given as.
+    /// </summary>
+    /// <param name="Kind">The type Z3 declares for the parameter.</param>
+    /// <param name="Value">Its value, in the textual form the kind is parsed from.</param>
+    private readonly record struct SolverParameter(ParameterKind Kind, string Value)
+    {
+        /// <summary>
+        /// Adds the parameter to the set handed to a solver.
+        /// </summary>
+        /// <param name="parameters">The set being built for the next check.</param>
+        /// <param name="name">The parameter's name.</param>
+        internal void Apply(Params parameters, string name)
+        {
+            switch (this.Kind)
+            {
+                case ParameterKind.Unsigned:
+                    parameters.Add(name, uint.Parse(this.Value, CultureInfo.InvariantCulture));
+                    break;
+                case ParameterKind.Boolean:
+                    parameters.Add(name, bool.Parse(this.Value));
+                    break;
+                case ParameterKind.Real:
+                    parameters.Add(name, double.Parse(this.Value, CultureInfo.InvariantCulture));
+                    break;
+                default:
+                    parameters.Add(name, this.Value);
+                    break;
+            }
+        }
     }
 }

@@ -138,6 +138,8 @@ internal sealed class ExpressionVisitor
                 return VisitBinary((BinaryExpression)expression, static (ctx, a, b) => (a, b) switch
                 {
                     (BitVecExpr ba, BitVecExpr bb) => ctx.MkBVURem(ba, bb),
+                    (BitVecExpr ba, _) => ctx.MkBVURem(ba, ToBitVector(ctx, b, ba.SortSize)),
+                    (_, BitVecExpr bb) => ctx.MkBVURem(ToBitVector(ctx, a, bb.SortSize), bb),
                     (IntExpr ia, IntExpr ib) => ctx.MkRem(ia, ib),
                     _ => throw new NotSupportedException("The modulo operator is supported only on integer or bit-vector operands; Z3 has no remainder on real-sorted values."),
                 });
@@ -161,10 +163,10 @@ internal sealed class ExpressionVisitor
                 return VisitComparison((BinaryExpression)expression, static (ctx, a, b) => ctx.MkGe(a, b), static (ctx, a, b) => ctx.MkBVUGE(a, b));
 
             case ExpressionType.Equal:
-                return VisitBinary((BinaryExpression)expression, static (ctx, a, b) => ctx.MkEq(a, b));
+                return VisitEquality((BinaryExpression)expression, negate: false);
 
             case ExpressionType.NotEqual:
-                return VisitBinary((BinaryExpression)expression, static (ctx, a, b) => ctx.MkNot(ctx.MkEq(a, b)));
+                return VisitEquality((BinaryExpression)expression, negate: true);
 
             case ExpressionType.MemberAccess:
                 return VisitMember((MemberExpression)expression);
@@ -249,6 +251,34 @@ internal sealed class ExpressionVisitor
     private Expr VisitBinary(BinaryExpression expression, Func<Context, Expr, Expr, Expr> ctor)
     {
         return ctor(this.context, Visit(expression.Left), Visit(expression.Right));
+    }
+
+    /// <summary>
+    /// Translates <c>==</c> or <c>!=</c>, which Z3 expresses as equality and its negation.
+    /// </summary>
+    /// <param name="expression">The equality node.</param>
+    /// <param name="negate">Whether to negate the equality, for <c>!=</c>.</param>
+    /// <returns>Z3 expression handle.</returns>
+    /// <remarks>
+    /// The operands need not already share a sort: a declared-width bit-vector compared with an
+    /// integer literal - <c>r.A == 15</c> - mixes the two, and the literal is read as a
+    /// width-matched bit pattern. Z3's equality is sort-checked, so without this the comparison
+    /// would be rejected rather than answered.
+    /// </remarks>
+    private Expr VisitEquality(BinaryExpression expression, bool negate)
+    {
+        Expr left = Visit(expression.Left);
+        Expr right = Visit(expression.Right);
+
+        if (left is BitVecExpr || right is BitVecExpr)
+        {
+            uint width = (left as BitVecExpr)?.SortSize ?? ((BitVecExpr)right).SortSize;
+            left = ToBitVector(this.context, left, width);
+            right = ToBitVector(this.context, right, width);
+        }
+
+        BoolExpr equality = this.context.MkEq(left, right);
+        return negate ? this.context.MkNot(equality) : equality;
     }
 
     /// <summary>
@@ -428,19 +458,26 @@ internal sealed class ExpressionVisitor
     /// <param name="bv">Builds the term for bit-vector operands.</param>
     /// <returns>Z3 expression handle.</returns>
     /// <remarks>
-    /// A bit-vector symbol (an unsigned CLR type) carries wrapping arithmetic; an <c>int</c>,
-    /// <c>long</c> or real symbol carries mathematical arithmetic. Both operands share a sort,
-    /// since C# would not compile a mixed expression without a conversion, which
-    /// <see cref="VisitConvert"/> handles first.
+    /// A bit-vector symbol (an unsigned CLR type, or a member declared with
+    /// <see cref="BitVecWidthAttribute"/>) carries wrapping arithmetic; an <c>int</c>, <c>long</c>
+    /// or real symbol carries mathematical arithmetic. Both operands usually share a sort, since C#
+    /// would not compile a mixed expression without a conversion, which <see cref="VisitConvert"/>
+    /// handles first - but a constant does not: <c>r.A + 1</c> on a 4-bit register mixes a
+    /// bit-vector with an integer literal, and the literal is read as a width-matched bit pattern.
+    /// See <see cref="ToBitVector"/>.
     /// </remarks>
     private Expr VisitArithmetic(BinaryExpression expression, Func<Context, ArithExpr, ArithExpr, ArithExpr> arith, Func<Context, BitVecExpr, BitVecExpr, BitVecExpr> bv)
     {
         Expr left = Visit(expression.Left);
         Expr right = Visit(expression.Right);
 
-        return left is BitVecExpr bvLeft
-            ? bv(this.context, bvLeft, (BitVecExpr)right)
-            : arith(this.context, (ArithExpr)left, (ArithExpr)right);
+        return (left, right) switch
+        {
+            (BitVecExpr bvLeft, BitVecExpr bvRight) => bv(this.context, bvLeft, bvRight),
+            (BitVecExpr bvLeft, _) => bv(this.context, bvLeft, ToBitVector(this.context, right, bvLeft.SortSize)),
+            (_, BitVecExpr bvRight) => bv(this.context, ToBitVector(this.context, left, bvRight.SortSize), bvRight),
+            _ => arith(this.context, (ArithExpr)left, (ArithExpr)right),
+        };
     }
 
     /// <summary>
@@ -452,17 +489,49 @@ internal sealed class ExpressionVisitor
     /// <param name="bv">Builds the unsigned comparison for bit-vector operands.</param>
     /// <returns>Z3 expression handle.</returns>
     /// <remarks>
-    /// Bit-vectors map from the unsigned CLR types, so the comparison is unsigned - <c>uint</c>
-    /// order, not two's-complement signed order.
+    /// Bit-vectors map from the unsigned CLR types and from members declared with
+    /// <see cref="BitVecWidthAttribute"/>, so the comparison is unsigned - <c>uint</c> order, not
+    /// two's-complement signed order. A literal on one side is read as a width-matched bit pattern,
+    /// as in <see cref="VisitArithmetic"/>.
     /// </remarks>
     private Expr VisitComparison(BinaryExpression expression, Func<Context, ArithExpr, ArithExpr, BoolExpr> arith, Func<Context, BitVecExpr, BitVecExpr, BoolExpr> bv)
     {
         Expr left = Visit(expression.Left);
         Expr right = Visit(expression.Right);
 
-        return left is BitVecExpr bvLeft
-            ? bv(this.context, bvLeft, (BitVecExpr)right)
-            : arith(this.context, (ArithExpr)left, (ArithExpr)right);
+        return (left, right) switch
+        {
+            (BitVecExpr bvLeft, BitVecExpr bvRight) => bv(this.context, bvLeft, bvRight),
+            (BitVecExpr bvLeft, _) => bv(this.context, bvLeft, ToBitVector(this.context, right, bvLeft.SortSize)),
+            (_, BitVecExpr bvRight) => bv(this.context, ToBitVector(this.context, left, bvRight.SortSize), bvRight),
+            _ => arith(this.context, (ArithExpr)left, (ArithExpr)right),
+        };
+    }
+
+    /// <summary>
+    /// Reads an operand as a bit-vector of the given width, so that it can be combined with one.
+    /// </summary>
+    /// <param name="context">The context the term is built in.</param>
+    /// <param name="expr">The operand, already translated.</param>
+    /// <param name="width">The width, in bits, of the bit-vector it is combined with.</param>
+    /// <returns>The operand as a bit-vector of <paramref name="width"/> bits.</returns>
+    /// <remarks>
+    /// A constant is the only mixed operand the DSL can reach: two symbols of different sorts need a
+    /// conversion to be written in C# at all, and <see cref="VisitConvert"/> has already applied it.
+    /// An integer literal becomes a bit-vector of the same width, which is what makes
+    /// <c>r.A + r.B &lt; r.A</c> and <c>r.B &gt;= 1</c> expressible against a declared-width member.
+    /// A value the width cannot hold wraps, exactly as the register arithmetic it joins does.
+    /// </remarks>
+    private static BitVecExpr ToBitVector(Context context, Expr expr, uint width)
+    {
+        return expr switch
+        {
+            BitVecExpr bitVector => bitVector,
+            IntNum literal => context.MkBV(literal.Int64, width),
+            IntExpr integer => context.MkInt2BV(width, integer),
+            _ => throw new NotSupportedException(
+                $"Cannot combine a {width}-bit bit-vector with an operand of sort {expr.Sort}: only integers convert to a bit-vector."),
+        };
     }
 
     /// <summary>
@@ -491,6 +560,8 @@ internal sealed class ExpressionVisitor
         {
             (BoolExpr boolLeft, BoolExpr boolRight) => boolOp(this.context, boolLeft, boolRight),
             (BitVecExpr bvLeft, BitVecExpr bvRight) => bvOp(this.context, bvLeft, bvRight),
+            (BitVecExpr bvLeft, _) => bvOp(this.context, bvLeft, ToBitVector(this.context, right, bvLeft.SortSize)),
+            (_, BitVecExpr bvRight) => bvOp(this.context, ToBitVector(this.context, left, bvRight.SortSize), bvRight),
             _ => throw new NotSupportedException(
                 $"The '{op}' operator is supported on Boolean operands and on bit-vector (uint/ulong) symbols. It is not supported on plain integer symbols, whose Z3 sort has no bitwise operations."),
         };
