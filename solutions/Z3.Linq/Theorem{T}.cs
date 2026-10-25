@@ -119,6 +119,28 @@ public class Theorem<T> : Theorem, ISolveable<T>
     }
 
     /// <summary>
+    /// Diagnoses the theorem's satisfiability, without extracting a solution.
+    /// </summary>
+    /// <param name="cancellationToken">A token that interrupts the check.</param>
+    /// <returns>
+    /// The status - satisfiable, unsatisfiable or undecided - and on a conflict the unsatisfiable
+    /// core: the hard constraints Z3's refutation used, by their position in the <c>Where</c>
+    /// chain.
+    /// </returns>
+    /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was cancelled.</exception>
+    /// <remarks>
+    /// A parallel surface, not a change to the solve contract: <see cref="Solve"/> and
+    /// <see cref="TrySolve(out T, CancellationToken)"/> keep their behaviour, including the
+    /// <see cref="TheoremUndecidedException"/> a solve throws. This one reports
+    /// <see cref="SolveStatus.Unknown"/> instead, and names the constraints that conflict when the
+    /// answer is <see cref="SolveStatus.Unsatisfiable"/>.
+    /// </remarks>
+    public Explanation Explain(CancellationToken cancellationToken = default)
+    {
+        return base.Explain<T>(cancellationToken);
+    }
+
+    /// <summary>
     /// Finds an optimal solution.
     /// </summary>
     /// <typeparam name="TResult">Type of the value being optimized.</typeparam>

@@ -155,6 +155,90 @@ public class Theorem
     }
 
     /// <summary>
+    /// Diagnoses the theorem's satisfiability without extracting a solution object.
+    /// </summary>
+    /// <typeparam name="T">Theorem environment type.</typeparam>
+    /// <param name="cancellationToken">A token that interrupts the check.</param>
+    /// <returns>
+    /// The status, and on a conflict the unsatisfiable core: the hard constraints that participate
+    /// in Z3's refutation, by their position in the <c>Where</c> chain.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// <see cref="TrySolve{T}(out T, CancellationToken)"/> collapses every non-satisfiable outcome
+    /// into <see langword="false"/>, which is the right contract for a solve and useless as a
+    /// diagnostic: "your constraints contradict each other" and "Z3 ran out of budget" call for
+    /// different fixes. This reports Z3's own status, including
+    /// <see cref="SolveStatus.Unknown"/> rather than throwing
+    /// <see cref="TheoremUndecidedException"/>.
+    /// </para>
+    /// <para>
+    /// Each hard constraint is asserted under a fresh tracking literal, which is what lets Z3 name
+    /// the ones its refutation used. The solver is therefore the general-purpose
+    /// <c>Context.MkSolver()</c> and not whatever a
+    /// <see cref="Z3Context"/> is configured to build: core extraction rides on hypothesis
+    /// tracking, and a backend without it returns an empty or partial core - a wrong answer rather
+    /// than a slow one.
+    /// </para>
+    /// <para>
+    /// The scalar type bounds the solve path adds (see #87) are asserted here too, untracked, so
+    /// that this status agrees with <see cref="TrySolve{T}(out T, CancellationToken)"/> on a
+    /// theorem whose only conflict is a value outside its CLR type's range. Such a conflict still
+    /// names the constraint that conflicts with the range, since removing that constraint removes
+    /// the refutation.
+    /// </para>
+    /// </remarks>
+    protected Explanation Explain<T>(CancellationToken cancellationToken)
+    {
+        using Context ctx = this.context.CreateContext();
+        var environment = GetEnvironment(ctx, typeof(T));
+
+        Solver solver = ctx.MkSolver();
+
+        var constraintList = GetConstraintsToAssert<T>().ToList();
+        var trackerToConstraint = new Dictionary<string, ConstraintRef>(constraintList.Count);
+
+        for (int index = 0; index < constraintList.Count; index++)
+        {
+            var constraint = constraintList[index];
+            BoolExpr expression = (BoolExpr)ExpressionVisitor.Translate(ctx, environment, constraint.Body, constraint.Parameters[0]);
+
+            // The tracker carries the index so a reported core maps back to a position in the
+            // Where chain; the caller never sees these names.
+            string trackerName = "__track_" + index.ToString(CultureInfo.InvariantCulture);
+            BoolExpr tracker = ctx.MkBoolConst(trackerName);
+            trackerToConstraint[trackerName] = new ConstraintRef(index, constraint.Body.ToString());
+            solver.AssertAndTrack(expression, tracker);
+        }
+
+        AssertBounds(ctx, solver, environment);
+
+        Status status = this.CheckStatus(ctx, solver, cancellationToken);
+
+        switch (status)
+        {
+            case Status.SATISFIABLE:
+                return new Explanation(SolveStatus.Satisfiable, Array.Empty<ConstraintRef>());
+
+            case Status.UNKNOWN:
+                return new Explanation(SolveStatus.Unknown, Array.Empty<ConstraintRef>());
+
+            default:
+                var core = new List<ConstraintRef>();
+                foreach (Expr tracker in solver.UnsatCore)
+                {
+                    if (trackerToConstraint.TryGetValue(tracker.ToString(), out var reference))
+                    {
+                        core.Add(reference);
+                    }
+                }
+
+                core.Sort((left, right) => left.Index.CompareTo(right.Index));
+                return new Explanation(SolveStatus.Unsatisfiable, core);
+        }
+    }
+
+    /// <summary>
     /// Finds an optimal solution using Z3.
     /// </summary>
     /// <typeparam name="T">Theorem environment type.</typeparam>
@@ -252,36 +336,7 @@ public class Theorem
     /// </remarks>
     private Status Check(Context ctx, Z3Object approach, CancellationToken cancellationToken)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-
-        // Disposed when this method returns, after the check has run: Params is native-backed, and
-        // the solver has copied what it needs by the time Check completes. A null (no limits set)
-        // is a no-op to dispose.
-        using Params? limits = this.context.CreateLimits(ctx);
-
-        switch (approach)
-        {
-            case Solver solver when limits is not null:
-                solver.Parameters = limits;
-                break;
-            case Optimize optimizer when limits is not null:
-                optimizer.Parameters = limits;
-                break;
-        }
-
-        Status status;
-
-        using (cancellationToken.Register(ctx.Interrupt))
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            status = approach switch
-            {
-                Solver solver => solver.Check(),
-                Optimize optimizer => optimizer.Check(),
-                _ => throw new ArgumentException("Expected a Solver or an Optimize.", nameof(approach)),
-            };
-        }
+        Status status = this.CheckStatus(ctx, approach, cancellationToken);
 
         if (status == Status.UNKNOWN)
         {
@@ -299,6 +354,54 @@ public class Theorem
     }
 
     /// <summary>
+    /// Checks the approach and returns Z3's status as it is, without turning
+    /// <see cref="Status.UNKNOWN"/> into an exception.
+    /// </summary>
+    /// <param name="ctx">The context the approach belongs to, interrupted on cancellation.</param>
+    /// <param name="approach">The <see cref="Solver"/> or <see cref="Optimize"/> to check.</param>
+    /// <param name="cancellationToken">A token that interrupts the check.</param>
+    /// <returns>The status Z3 reports.</returns>
+    /// <remarks>
+    /// The diagnostic path needs the raw status: "could not decide" is one of the outcomes it
+    /// reports, not a failure of the call. Everything the two paths share - the limits from the
+    /// <see cref="Z3Context"/>, the registration of the token on
+    /// <see cref="Microsoft.Z3.Context.Interrupt"/> - lives here so the two cannot drift.
+    /// </remarks>
+    private Status CheckStatus(Context ctx, Z3Object approach, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        // Disposed when this method returns, after the check has run: Params is native-backed, and
+        // the solver has copied what it needs by the time Check completes. A null (no limits set)
+        // is a no-op to dispose.
+        using Params? limits = this.context.CreateLimits(ctx);
+
+        switch (approach)
+        {
+            case Solver solver when limits is not null:
+                solver.Parameters = limits;
+                break;
+            case Optimize optimizer when limits is not null:
+                optimizer.Parameters = limits;
+                break;
+        }
+
+        using (cancellationToken.Register(ctx.Interrupt))
+        {
+            // Read again inside the registration: the token can be cancelled between the first
+            // check and the subscription, and the registration would then never fire.
+            cancellationToken.ThrowIfCancellationRequested();
+
+            return approach switch
+            {
+                Solver solver => solver.Check(),
+                Optimize optimizer => optimizer.Check(),
+                _ => throw new ArgumentException("Expected a Solver or an Optimize.", nameof(approach)),
+            };
+        }
+    }
+
+    /// <summary>
     /// Asserts the theorem constraints on the Z3 context.
     /// </summary>
     /// <param name="context">Z3 context.</param>
@@ -306,6 +409,31 @@ public class Theorem
     /// <param name="environment">Environment with bindings of theorem variables to Z3 handles.</param>
     /// <typeparam name="T">Theorem environment type.</typeparam>
     private void AssertConstraints<T>(Context context, Z3Object approach, Environment environment)
+    {
+        foreach (var constraint in GetConstraintsToAssert<T>())
+        {
+            BoolExpr expression = (BoolExpr)ExpressionVisitor.Translate(context, environment, constraint.Body, constraint.Parameters[0]);
+
+            Assert(approach, expression);
+
+            this.context.LogWriteLine(expression.ToString());
+        }
+
+        AssertBounds(context, approach, environment);
+    }
+
+    /// <summary>
+    /// Resolves the hard constraints to assert, applying a registered
+    /// <see cref="TheoremGlobalRewriterAttribute"/> if there is one.
+    /// </summary>
+    /// <typeparam name="T">Theorem environment type.</typeparam>
+    /// <returns>The constraints, in the order they were declared.</returns>
+    /// <remarks>
+    /// Shared by the solve path and by <see cref="Explain{T}"/>, so the two agree on what the
+    /// theorem's constraints are: a rewriter changes the system, and a diagnostic that read the
+    /// unre-written constraints would report a conflict the solver never saw.
+    /// </remarks>
+    private IEnumerable<LambdaExpression> GetConstraintsToAssert<T>()
     {
         var constraintsToAssert = this.constraints;
 
@@ -330,17 +458,7 @@ public class Theorem
             constraintsToAssert = rewriter.Rewrite(constraintsToAssert);
         }
 
-        // Visit, assert and log.
-        foreach (var constraint in constraintsToAssert)
-        {
-            BoolExpr expression = (BoolExpr)ExpressionVisitor.Translate(context, environment, constraint.Body, constraint.Parameters[0]);
-
-            Assert(approach, expression);
-
-            this.context.LogWriteLine(expression.ToString());
-        }
-
-        AssertBounds(context, approach, environment);
+        return constraintsToAssert;
     }
 
     /// <summary>
