@@ -150,7 +150,7 @@ internal sealed class ExpressionVisitor
                 return VisitConditional((ConditionalExpression)expression);
 
             case ExpressionType.ArrayIndex:
-                return VisitBinary((BinaryExpression)expression, static (ctx, a, b) => ctx.MkSelect((ArrayExpr)a, b));
+                return this.VisitArrayIndex((BinaryExpression)expression);
 
             case ExpressionType.Index:
                 return VisitIndex((IndexExpression)expression, static (ctx, a, b) => ctx.MkSelect((ArrayExpr)a, b));
@@ -220,6 +220,174 @@ internal sealed class ExpressionVisitor
     private Expr VisitBinary(BinaryExpression expression, Func<Context, Expr, Expr, Expr> ctor)
     {
         return ctor(this.context, Visit(expression.Left), Visit(expression.Right));
+    }
+
+    /// <summary>
+    /// Translates <c>array[i]</c>, in whichever of the two <see cref="CollectionHandling"/> modes
+    /// the array was built for.
+    /// </summary>
+    /// <param name="expression">The <see cref="ExpressionType.ArrayIndex"/> node.</param>
+    /// <returns>Z3 expression handle for the selected element.</returns>
+    /// <remarks>
+    /// In <see cref="CollectionHandling.Array"/> mode the left operand translates to an array
+    /// constant and Z3's Select picks the element. In <see cref="CollectionHandling.Constants"/>
+    /// mode there is no array constant to select from: the operand's environment is a
+    /// <see cref="MultipleEnvironment"/> holding one constant per element, created on first
+    /// access, and the element's constant is returned directly. That is why this path cannot go
+    /// through <see cref="Visit"/> for the left operand - Visit returns a single handle and a
+    /// <see cref="MultipleEnvironment"/> has none.
+    /// </remarks>
+    private Expr VisitArrayIndex(BinaryExpression expression)
+    {
+        if (this.TryResolveMultipleEnvironment(expression.Left, out MultipleEnvironment? multiEnv))
+        {
+            Environment? elementEnv = this.ResolveElementEnvironment(multiEnv!, expression.Right)
+                ?? throw new NotSupportedException(
+                    $"{CollectionHandling.Constants} mode needs a compile-time constant index: '{expression}' has a symbolic one. "
+                    + $"Build the theorem with {nameof(CollectionHandling)}.{nameof(CollectionHandling.Array)} to index with a symbol.");
+
+            return elementEnv.Expr!;
+        }
+
+        return this.context.MkSelect((ArrayExpr)Visit(expression.Left), Visit(expression.Right));
+    }
+
+    /// <summary>
+    /// Resolves the left operand of an array index to the <see cref="MultipleEnvironment"/> of a
+    /// <see cref="CollectionHandling.Constants"/> collection, if that is what it is.
+    /// </summary>
+    /// <param name="left">Left operand of an <see cref="ExpressionType.ArrayIndex"/> node.</param>
+    /// <param name="multiEnv">The collection's per-element environment, when one was found.</param>
+    /// <returns><see langword="true"/> when <paramref name="left"/> denotes a constants-mode collection.</returns>
+    /// <remarks>
+    /// Two shapes reach here. <c>Cells[i]</c> has a member access on the left, which the bindings
+    /// table resolves directly. <c>Cells[i][j]</c> has a nested index, whose own element has to be
+    /// materialised first - a row of <c>int[][]</c> is itself a <see cref="MultipleEnvironment"/> -
+    /// and then looked into.
+    /// </remarks>
+    private bool TryResolveMultipleEnvironment(Expression left, out MultipleEnvironment? multiEnv)
+    {
+        multiEnv = null;
+
+        if (left is MemberExpression member)
+        {
+            multiEnv = this.ResolveBoundEnvironment(member) as MultipleEnvironment;
+            return multiEnv is not null;
+        }
+
+        if (left is BinaryExpression { NodeType: ExpressionType.ArrayIndex } nested
+            && this.TryResolveMultipleEnvironment(nested.Left, out MultipleEnvironment? parent))
+        {
+            multiEnv = this.ResolveElementEnvironment(parent!, nested.Right) as MultipleEnvironment;
+            return multiEnv is not null;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Returns the environment bound to a member access on the theorem's parameter, or
+    /// <see langword="null"/> when the access is not one the bindings table can resolve.
+    /// </summary>
+    /// <param name="member">The member access.</param>
+    /// <returns>The bound environment, or <see langword="null"/>.</returns>
+    /// <remarks>
+    /// Unlike <see cref="VisitMember"/> this never throws and never evaluates a captured constant:
+    /// it answers one question - is this member access bound in the environment - and is used
+    /// where a <see langword="null"/> simply means "not that shape".
+    /// </remarks>
+    private Environment? ResolveBoundEnvironment(MemberExpression member)
+    {
+        List<MemberExpression> hierarchy = [member];
+
+        var mExp = member;
+        while (mExp.Expression is MemberExpression parent)
+        {
+            mExp = parent;
+            hierarchy.Add(parent);
+        }
+
+        if (hierarchy[^1].Expression != this.param)
+        {
+            return null;
+        }
+
+        Environment subEnv = this.environment;
+
+        for (int i = hierarchy.Count - 1; i >= 0; i--)
+        {
+            MemberInfo key = hierarchy[i].Member;
+
+            if (!subEnv.Properties.TryGetValue(key, out Environment? next))
+            {
+                return null;
+            }
+
+            subEnv = next;
+        }
+
+        return subEnv;
+    }
+
+    /// <summary>
+    /// Gets the per-element environment of a <see cref="MultipleEnvironment"/> at a constant
+    /// index, creating it on first access.
+    /// </summary>
+    /// <param name="multiEnv">The collection's per-element environment.</param>
+    /// <param name="indexExpression">The index expression.</param>
+    /// <returns>The element's environment, or <see langword="null"/> when the index is not a constant.</returns>
+    private Environment? ResolveElementEnvironment(MultipleEnvironment multiEnv, Expression indexExpression)
+    {
+        // The index of a nested loop is a captured local, so it reaches us as a member access on
+        // the closure rather than as a constant. Partial evaluation is what turns it into one.
+        // The evaluator only reduces a lambda, so the index is wrapped in a parameterless one and
+        // the body is taken back out - the same shape the rewriter uses for a captured constant.
+        Expression indexExpr = PartialEvaluator.PartialEval(Expression.Lambda(indexExpression), ExpressionInterpreter.Instance).Body;
+
+        if (indexExpr is not ConstantExpression constant)
+        {
+            return null;
+        }
+
+        object? index = constant.Value;
+
+        if (index is null)
+        {
+            return null;
+        }
+
+        if (!multiEnv.SubEnvironments.TryGetValue(index, out Environment? elementEnv))
+        {
+            elementEnv = this.CreateElementEnvironment(multiEnv.ElementType, $"{multiEnv.Prefix}_{index}");
+            multiEnv.SubEnvironments[index] = elementEnv;
+        }
+
+        return elementEnv;
+    }
+
+    /// <summary>
+    /// Creates the environment of one element of a constants-mode collection.
+    /// </summary>
+    /// <param name="elementType">The collection's element type.</param>
+    /// <param name="prefix">Symbol name for the element.</param>
+    /// <returns>The element's environment.</returns>
+    /// <remarks>
+    /// A scalar element gets one constant of the sort its type maps to. A collection element -
+    /// a row of <c>int[][]</c> - gets a further <see cref="MultipleEnvironment"/> instead, so that
+    /// the next index in <c>Cells[i][j]</c> recurses one level down.
+    /// </remarks>
+    private Environment CreateElementEnvironment(Type elementType, string prefix)
+    {
+        if (elementType.IsArray || (elementType.IsGenericType && typeof(IEnumerable).IsAssignableFrom(elementType.GetGenericTypeDefinition())))
+        {
+            Type nested = elementType.IsArray ? elementType.GetElementType()! : elementType.GetGenericArguments()[0];
+            return new MultipleEnvironment(prefix, nested);
+        }
+
+        Sort? sort = Theorem.TryGetSymbolSort(this.context, Type.GetTypeCode(elementType))
+            ?? throw new NotSupportedException($"Unsupported element type {elementType.FullName}");
+
+        return new Environment { Expr = this.context.MkConst(prefix, sort) };
     }
 
     /// <summary>

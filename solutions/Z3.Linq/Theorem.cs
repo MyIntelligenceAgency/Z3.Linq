@@ -84,6 +84,20 @@ public class Theorem
     protected Z3Context Context => context;
 
     /// <summary>
+    /// Gets or sets how collection symbols in this theorem's environment are modelled in Z3.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="CollectionHandling.Array"/> (the default) gives a collection a single array
+    /// constant, which Z3 reads with Select and which therefore accepts a symbolic index.
+    /// <see cref="CollectionHandling.Constants"/> gives each element a constant of its own,
+    /// created on first access; that is the classic binding model, and it is what a constraint
+    /// that names elements individually needs. Set it on the context
+    /// (<see cref="Z3Context.DefaultCollectionHandling"/>) to have every theorem of that context
+    /// inherit it.
+    /// </remarks>
+    public CollectionHandling DefaultCollectionHandling { get; set; } = CollectionHandling.Array;
+
+    /// <summary>
     /// Returns a comma-separated representation of the constraints embodied in the theorem.
     /// </summary>
     /// <returns>Comma-separated string representation of the theorem's constraints.</returns>
@@ -606,6 +620,15 @@ public class Theorem
             // Elements are always read back with an integer index - ConvertZ3Expression selects
             // with MkInt(i) - so the domain is Int whatever the element type. The range is the
             // sort a scalar of that type would get, from the one mapping both share. See #64.
+            // Constants mode: the collection gets no array constant at all. Its environment is the
+            // per-element factory, and each element's constant comes into being the first time the
+            // constraints read it - so a collection nothing reads costs nothing, and an element
+            // named by index carries that index in its symbol name.
+            if (this.DefaultCollectionHandling == CollectionHandling.Constants)
+            {
+                return new MultipleEnvironment(prefix, elType!);
+            }
+
             Sort elementSort = TryGetSymbolSort(context, elTypeCode)
                 ?? throw new NotSupportedException($"Unsupported member type {targetType.FullName}");
 
@@ -703,38 +726,50 @@ public class Theorem
                 Type eltType = (parameterType.IsArray ? parameterType.GetElementType() : parameterType.GetGenericArguments()[0])
                     ?? throw new NotSupportedException("Unsupported untyped array parameter type for " + parameter.Name + ".");
 
-                var arrVal = (ArrayExpr)(subEnv.Expr ?? throw new ArgumentException(
-                    $"nameof(ConvertZ3Expression) requires {nameof(subEnv)}.{nameof(subEnv.Expr)} to be non-null",
-                    nameof(subEnv)));
+                object? existingMember = templateValue ?? GetMemberValue(parameter, destinationObject);
 
-                // A solution never changes the length of a collection, so the length has to come
-                // from somewhere: the collection on the template passed to NewTheorem, or failing
-                // that the one already on the instance - its initialiser. A value tuple has nowhere
-                // to put an initialiser and an anonymous instance is created uninitialised, so for
-                // those the template is the only source. With neither, say so by name rather than
-                // fail on the null. See #53 and #78.
-                if ((templateValue ?? GetMemberValue(parameter, destinationObject)) is not ICollection existing)
+                // Constants mode: the collection has no array constant at all, so there is nothing
+                // to Select. Each element the constraints named carries a constant of its own in
+                // the collection's sub-environments, and that is what is read back.
+                if (subEnv is MultipleEnvironment multiEnv)
                 {
-                    throw new NotSupportedException(
-                        $"Collection symbol {parameter.Name} has no length. A collection must be pre-sized: initialise it on the environment type, or pass an instance with it initialised to NewTheorem.");
+                    value = ReadConstantsCollection(multiEnv, context, model, parameter, parameterType, existingMember);
                 }
-
-                int existingLength = existing.Count;
-
-                // Fill a typed array in place, rather than an ArrayList that keeps a boxed object[]
-                // backing store and is then copied into a typed array by ToArray. The element values
-                // are still boxed to pass through SetValue, as they were to pass through Add.
-                Array results = Array.CreateInstance(eltType, existingLength);
-
-                TypeCode eltTypeCode = Type.GetTypeCode(eltType);
-
-                for (int i = 0; i < existingLength; i++)
+                else
                 {
-                    var numValExpr = EvaluateWithCompletion(model, context.MkSelect(arrVal, context.MkInt(i)));
-                    results.SetValue(ReadZ3Value(numValExpr, eltTypeCode, parameter.Name, eltType), i);
-                }
+                    var arrVal = (ArrayExpr)(subEnv.Expr ?? throw new ArgumentException(
+                        $"nameof(ConvertZ3Expression) requires {nameof(subEnv)}.{nameof(subEnv.Expr)} to be non-null",
+                        nameof(subEnv)));
 
-                value = parameterType.IsArray ? results : Activator.CreateInstance(parameterType, results)!;
+                    // A solution never changes the length of a collection, so the length has to come
+                    // from somewhere: the collection on the template passed to NewTheorem, or failing
+                    // that the one already on the instance - its initialiser. A value tuple has nowhere
+                    // to put an initialiser and an anonymous instance is created uninitialised, so for
+                    // those the template is the only source. With neither, say so by name rather than
+                    // fail on the null. See #53 and #78.
+                    if (existingMember is not ICollection existing)
+                    {
+                        throw new NotSupportedException(
+                            $"Collection symbol {parameter.Name} has no length. A collection must be pre-sized: initialise it on the environment type, or pass an instance with it initialised to NewTheorem.");
+                    }
+
+                    int existingLength = existing.Count;
+
+                    // Fill a typed array in place, rather than an ArrayList that keeps a boxed object[]
+                    // backing store and is then copied into a typed array by ToArray. The element values
+                    // are still boxed to pass through SetValue, as they were to pass through Add.
+                    Array results = Array.CreateInstance(eltType, existingLength);
+
+                    TypeCode eltTypeCode = Type.GetTypeCode(eltType);
+
+                    for (int i = 0; i < existingLength; i++)
+                    {
+                        var numValExpr = EvaluateWithCompletion(model, context.MkSelect(arrVal, context.MkInt(i)));
+                        results.SetValue(ReadZ3Value(numValExpr, eltTypeCode, parameter.Name, eltType), i);
+                    }
+
+                    value = parameterType.IsArray ? results : Activator.CreateInstance(parameterType, results)!;
+                }
             }
             else
             {
@@ -772,6 +807,105 @@ public class Theorem
         }
 
         return value!;
+    }
+
+    /// <summary>
+    /// Reads a collection modelled as one Z3 constant per element
+    /// (<see cref="CollectionHandling.Constants"/>) back into CLR values.
+    /// </summary>
+    /// <param name="multiEnv">The collection's per-element environment.</param>
+    /// <param name="context">Z3 context.</param>
+    /// <param name="model">The model the theorem was satisfied in.</param>
+    /// <param name="parameter">The member holding the collection, for the diagnostics.</param>
+    /// <param name="parameterType">The CLR type of the collection.</param>
+    /// <param name="existingMember">
+    /// The collection on the template or on the instance, whose length the solution keeps, or
+    /// <see langword="null"/> when there is none.
+    /// </param>
+    /// <returns>The collection, as a CLR array or collection instance.</returns>
+    /// <remarks>
+    /// Only the indices the constraints read carry a constant, so the length is the greater of the
+    /// one <paramref name="existingMember"/> supplies and one past the highest materialised index.
+    /// An index that carries no constant is free - any value satisfies the theorem - and it comes
+    /// back as the element type's default rather than as a null that a value-type array cannot
+    /// hold. A length no constant and no template accounts for is not guessed: the collection is
+    /// as long as what is known about it.
+    /// </remarks>
+    private static object ReadConstantsCollection(
+        MultipleEnvironment multiEnv,
+        Context context,
+        Model model,
+        MemberInfo parameter,
+        Type parameterType,
+        object? existingMember)
+    {
+        Type eltType = (parameterType.IsArray ? parameterType.GetElementType() : parameterType.GetGenericArguments()[0])
+            ?? throw new NotSupportedException("Unsupported untyped array parameter type for " + parameter.Name + ".");
+        TypeCode eltTypeCode = Type.GetTypeCode(eltType);
+
+        int length = existingMember is ICollection existing ? existing.Count : 0;
+
+        foreach (object index in multiEnv.SubEnvironments.Keys)
+        {
+            if (index is int position && position >= length)
+            {
+                length = position + 1;
+            }
+        }
+
+        Array results = Array.CreateInstance(eltType, length);
+
+        for (int i = 0; i < length; i++)
+        {
+            object? element = null;
+
+            if (multiEnv.SubEnvironments.TryGetValue(i, out Environment? elementEnv))
+            {
+                if (elementEnv is MultipleEnvironment nested)
+                {
+                    element = ReadConstantsCollection(nested, context, model, parameter, eltType, ElementAt(existingMember, i));
+                }
+                else if (elementEnv.Expr is { } elementExpr)
+                {
+                    element = ReadZ3Value(EvaluateWithCompletion(model, elementExpr), eltTypeCode, parameter.Name, eltType);
+                }
+            }
+
+            if (element is null && eltType.IsValueType)
+            {
+                element = Activator.CreateInstance(eltType);
+            }
+
+            results.SetValue(element, i);
+        }
+
+        return parameterType.IsArray ? results : Activator.CreateInstance(parameterType, results)!;
+    }
+
+    /// <summary>
+    /// Reads the element at <paramref name="index"/> off a collection, or returns
+    /// <see langword="null"/> when the collection has no such element.
+    /// </summary>
+    /// <param name="collection">The collection to read, or <see langword="null"/>.</param>
+    /// <param name="index">The zero-based position to read.</param>
+    /// <returns>The element, or <see langword="null"/>.</returns>
+    private static object? ElementAt(object? collection, int index)
+    {
+        if (collection is not IEnumerable sequence)
+        {
+            return null;
+        }
+
+        int current = 0;
+        foreach (object? item in sequence)
+        {
+            if (current++ == index)
+            {
+                return item;
+            }
+        }
+
+        return null;
     }
 
     /// <summary>

@@ -93,6 +93,18 @@ public sealed class Z3Context : IDisposable
     }
 
     /// <summary>
+    /// Gets or sets how collection symbols are modelled in Z3 for the theorems this context
+    /// creates.
+    /// </summary>
+    /// <remarks>
+    /// Propagated to every <see cref="Theorem{T}"/> built here, and re-propagated by its
+    /// <c>Where</c>. The default, <see cref="CollectionHandling.Array"/>, keeps the behaviour a
+    /// nested array has always had; <see cref="CollectionHandling.Constants"/> is the mode that
+    /// names each element.
+    /// </remarks>
+    public CollectionHandling DefaultCollectionHandling { get; set; } = CollectionHandling.Array;
+
+    /// <summary>
     /// Closes the native resources held by the Z3 theorem prover.
     /// </summary>
     public void Dispose()
@@ -107,7 +119,7 @@ public sealed class Z3Context : IDisposable
     /// <returns>New theorem object based on the given environment.</returns>
     public Theorem<T> NewTheorem<T>()
     {
-        return new Theorem<T>(this);
+        return new Theorem<T>(this) { DefaultCollectionHandling = this.DefaultCollectionHandling };
     }
 
     /// <summary>
@@ -143,7 +155,7 @@ public sealed class Z3Context : IDisposable
     /// <returns>New theorem object based on the given environment.</returns>
     public Theorem<T> NewTheorem<T>(T template)
     {
-        return new Theorem<T>(this, template);
+        return new Theorem<T>(this, template) { DefaultCollectionHandling = this.DefaultCollectionHandling };
     }
 
     /// <summary>

@@ -177,7 +177,10 @@ public class Theorem<T> : Theorem, ISolveable<T>
     /// <returns>Theorem with the new constraint applied.</returns>
     public Theorem<T> Where(Expression<Func<T, bool>> constraint)
     {
-        return new Theorem<T>(base.Context, base.Constraints.Concat([constraint]), base.Template);
+        return new Theorem<T>(base.Context, base.Constraints.Concat([constraint]), base.Template)
+        {
+            DefaultCollectionHandling = this.DefaultCollectionHandling,
+        };
     }
 
     /// <summary>

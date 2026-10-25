@@ -38,3 +38,59 @@ public class Environment
     /// </summary>
     public Dictionary<MemberInfo, Environment> Properties { get; private set; } = new Dictionary<MemberInfo, Environment>();
 }
+
+/// <summary>
+/// How a collection symbol is modelled in Z3.
+/// </summary>
+public enum CollectionHandling
+{
+    /// <summary>
+    /// One Z3 constant per element, created on first index access. This is the classic binding
+    /// model, and it is the only one that can constrain individual elements by name.
+    /// </summary>
+    Constants,
+
+    /// <summary>
+    /// Z3 array theory: a single array constant driven by Select/Store. This is the default,
+    /// and the only mode that supports a symbolic index.
+    /// </summary>
+    Array,
+}
+
+/// <summary>
+/// The environment of a collection modelled as one Z3 constant per element
+/// (<see cref="CollectionHandling.Constants"/>).
+/// </summary>
+/// <remarks>
+/// The per-element environments are created lazily, on first index access, so a collection that
+/// the constraints never read costs nothing. An element whose type is itself a collection gets a
+/// further <see cref="MultipleEnvironment"/>, which is what lets <c>int[][]</c> recurse.
+/// </remarks>
+public class MultipleEnvironment : Environment
+{
+    /// <summary>
+    /// Initializes a new instance of the <see cref="MultipleEnvironment"/> class.
+    /// </summary>
+    /// <param name="prefix">Symbol prefix used to name the per-element constants.</param>
+    /// <param name="elementType">Element type of the modelled collection.</param>
+    public MultipleEnvironment(string prefix, Type elementType)
+    {
+        this.Prefix = prefix;
+        this.ElementType = elementType;
+    }
+
+    /// <summary>
+    /// Gets the symbol prefix used to name the per-element constants.
+    /// </summary>
+    public string Prefix { get; }
+
+    /// <summary>
+    /// Gets the element type of the modelled collection.
+    /// </summary>
+    public Type ElementType { get; }
+
+    /// <summary>
+    /// Gets the per-element environments, keyed by the index they were created for.
+    /// </summary>
+    public Dictionary<object, Environment> SubEnvironments { get; } = new Dictionary<object, Environment>();
+}
