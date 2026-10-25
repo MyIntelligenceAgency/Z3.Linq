@@ -10,6 +10,8 @@ using MiaPlaza.ExpressionUtils.Evaluating;
 
 using Microsoft.Z3;
 
+using ExprVisitor = System.Linq.Expressions.ExpressionVisitor;
+
 /// <summary>
 /// Translates the LINQ expression tree of one theorem constraint into a Z3 expression.
 /// </summary>
@@ -727,7 +729,51 @@ internal sealed class ExpressionVisitor
             }
         }
 
+        // A call that mentions no theorem parameter is not a term at all: it produces the value it
+        // produces, and only its value belongs in the translation. Rational.Of(1, 3) is the case
+        // that matters - a static factory is the only way to write an exact fraction in a lambda, so
+        // without this every exact-rational constraint would be refused as an unknown method call.
+        // Tested after the magic methods and the indexers, which are calls the DSL does translate
+        // and which this would otherwise evaluate away on the host.
+        if (!ParameterFinder.Contains(call))
+        {
+            return VisitConstantValue(EvaluateToHostValue(call)!);
+        }
+
         throw new NotSupportedException("Unknown method call:" + method.ToString());
+    }
+
+    /// <summary>
+    /// Finds whether an expression mentions any parameter.
+    /// </summary>
+    /// <remarks>
+    /// Used to tell a host value from a term: an expression with no parameter in it can be
+    /// evaluated, one that mentions a parameter has to be translated.
+    /// </remarks>
+    private sealed class ParameterFinder : ExprVisitor
+    {
+        private bool found;
+
+        /// <summary>
+        /// Determines whether the given expression mentions a parameter.
+        /// </summary>
+        /// <param name="expression">The expression to search.</param>
+        /// <returns>Whether a parameter occurs in it.</returns>
+        public static bool Contains(Expression expression)
+        {
+            var finder = new ParameterFinder();
+            finder.Visit(expression);
+
+            return finder.found;
+        }
+
+        /// <inheritdoc/>
+        protected override Expression VisitParameter(ParameterExpression node)
+        {
+            this.found = true;
+
+            return node;
+        }
     }
 
     /// <summary>
@@ -888,6 +934,15 @@ internal sealed class ExpressionVisitor
     /// <returns>Z3 expression handle.</returns>
     private Expr VisitConstantValue(object val)
     {
+        // Exact rational constants are emitted as the fraction num/den, which Z3 parses as a
+        // rational. This is the path a CLR double cannot offer for a non-terminating fraction:
+        // 1/3 stringified from a double is a sixteen-digit truncation, and 3 * (that) is not 1.
+        // Checked before the TypeCode switch because a Rational is a struct, so TypeCode.Object.
+        if (val is Rational rational)
+        {
+            return this.context.MkReal(rational.ToString());
+        }
+
         TypeCode typeCode = Type.GetTypeCode(val.GetType());
 
         return typeCode switch
