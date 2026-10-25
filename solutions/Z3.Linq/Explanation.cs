@@ -7,7 +7,7 @@ using System.Linq;
 /// The satisfiability outcome of a theorem, as reported by <c>Explain</c>.
 /// </summary>
 /// <remarks>
-/// <see cref="Theorem{T}.Solve"/> answers <c>default(T)</c> for every outcome that is not
+/// <see cref="Theorem{T}.Solve(CancellationToken)"/> answers <c>default(T)</c> for every outcome that is not
 /// satisfiable, so "the constraints contradict each other" and "Z3 could not decide" arrive as the
 /// same value. The diagnostic surface keeps the three Z3 statuses apart.
 /// </remarks>

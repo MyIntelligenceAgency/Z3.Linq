@@ -6,7 +6,7 @@ namespace Z3.Linq.Tests;
 /// The diagnostic surface <see cref="Theorem{T}.Explain"/>.
 /// </summary>
 /// <remarks>
-/// <see cref="Theorem{T}.Solve"/> collapses every non-satisfiable outcome to <c>default(T)</c>, so
+/// <see cref="Theorem{T}.Solve(CancellationToken)"/> collapses every non-satisfiable outcome to <c>default(T)</c>, so
 /// "no solution exists" and "the solver could not decide" arrive as the same value, and nothing
 /// says <em>which</em> constraints contradict each other. This class holds both halves: the status
 /// is reported as Z3 reports it, and on a conflict the core names the constraints whose removal
