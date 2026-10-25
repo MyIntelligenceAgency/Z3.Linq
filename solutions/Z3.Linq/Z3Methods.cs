@@ -151,4 +151,51 @@ public static class Z3Methods
     {
         throw new NotSupportedException("This method should only be used in query expressions.");
     }
+
+    /// <summary>
+    /// Creates a predicate stating that the given predicate holds for every element of a domain.
+    /// </summary>
+    /// <typeparam name="T">Type of the domain's elements.</typeparam>
+    /// <param name="domain">A finite domain known at translation time, such as <c>Enumerable.Range(0, n)</c>.</param>
+    /// <param name="predicate">Predicate over one domain element.</param>
+    /// <returns>Predicate return value.</returns>
+    /// <remarks>
+    /// <para>
+    /// This method should only be used within LINQ expressions. The domain is evaluated on the host
+    /// and the predicate is unrolled into a conjunction over its elements, so an empty domain holds
+    /// vacuously.
+    /// </para>
+    /// <para>
+    /// It is a bounded quantifier over a finite, enumerable domain - what a C# loop emitting one
+    /// constraint per index would otherwise express - and <em>not</em> an SMT quantifier over an
+    /// unbounded sort.
+    /// </para>
+    /// </remarks>
+    public static bool ForAll<T>(IEnumerable<T> domain, Func<T, bool> predicate)
+    {
+        throw new NotSupportedException("This method should only be used in query expressions.");
+    }
+
+    /// <summary>
+    /// Creates a predicate stating that the given predicate holds for at least one element of a domain.
+    /// </summary>
+    /// <typeparam name="T">Type of the domain's elements.</typeparam>
+    /// <param name="domain">A finite domain known at translation time, such as <c>Enumerable.Range(0, n)</c>.</param>
+    /// <param name="predicate">Predicate over one domain element.</param>
+    /// <returns>Predicate return value.</returns>
+    /// <remarks>
+    /// <para>
+    /// This method should only be used within LINQ expressions. The domain is evaluated on the host
+    /// and the predicate is unrolled into a disjunction over its elements, so an empty domain is
+    /// unsatisfiable.
+    /// </para>
+    /// <para>
+    /// It is a bounded quantifier over a finite, enumerable domain, and <em>not</em> an SMT
+    /// quantifier over an unbounded sort.
+    /// </para>
+    /// </remarks>
+    public static bool Exists<T>(IEnumerable<T> domain, Func<T, bool> predicate)
+    {
+        throw new NotSupportedException("This method should only be used in query expressions.");
+    }
 }

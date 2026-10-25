@@ -46,6 +46,12 @@ internal sealed class ExpressionVisitor
     /// <summary>The definition of <see cref="Z3Methods.WeightedExactly"/>, cached for the call-site match.</summary>
     private static readonly MethodInfo WeightedExactlyMethod = typeof(Z3Methods).GetMethod(nameof(Z3Methods.WeightedExactly))!;
 
+    /// <summary>The generic definition of <see cref="Z3Methods.ForAll{T}"/>, cached for the call-site match.</summary>
+    private static readonly MethodInfo ForAllMethod = typeof(Z3Methods).GetMethod(nameof(Z3Methods.ForAll))!;
+
+    /// <summary>The generic definition of <see cref="Z3Methods.Exists{T}"/>, cached for the call-site match.</summary>
+    private static readonly MethodInfo ExistsMethod = typeof(Z3Methods).GetMethod(nameof(Z3Methods.Exists))!;
+
     /// <summary>The generic definition of <see cref="Enumerable.ToArray{TSource}"/>, cached for the call-site match.</summary>
     private static readonly MethodInfo EnumerableToArrayMethod =
         typeof(Enumerable).GetMethods().First(m => m.Name == nameof(Enumerable.ToArray));
@@ -692,6 +698,19 @@ internal sealed class ExpressionVisitor
             return this.context.MkPBEq(weights, indicators.ToArray(), bound);
         }
 
+        // The bounded quantifiers. The domain is a host value and the predicate is unrolled over
+        // it, so what looks like a quantifier in the query is a finite conjunction or disjunction
+        // in the term - a different constraint from an SMT quantifier over an unbounded sort.
+        if (method.IsGenericMethod && method.GetGenericMethodDefinition() == ForAllMethod)
+        {
+            return this.VisitBoundedQuantifier(call, isUniversal: true);
+        }
+
+        if (method.IsGenericMethod && method.GetGenericMethodDefinition() == ExistsMethod)
+        {
+            return this.VisitBoundedQuantifier(call, isUniversal: false);
+        }
+
         if (method.Name.StartsWith("get_"))
         {
             // Assuming it's an indexed property
@@ -709,6 +728,62 @@ internal sealed class ExpressionVisitor
         }
 
         throw new NotSupportedException("Unknown method call:" + method.ToString());
+    }
+
+    /// <summary>
+    /// Translates a bounded quantifier by unrolling it over its domain.
+    /// </summary>
+    /// <param name="call">The call to <see cref="Z3Methods.ForAll{T}"/> or <see cref="Z3Methods.Exists{T}"/>.</param>
+    /// <param name="isUniversal">Whether the quantifier is universal.</param>
+    /// <returns>The unrolled term.</returns>
+    /// <remarks>
+    /// The domain is read as a host value and the predicate is applied to each element in turn, so
+    /// the result is a finite conjunction (universal) or disjunction (existential). The empty domain
+    /// falls out of that reading rather than being special-cased away: an empty conjunction holds,
+    /// an empty disjunction does not.
+    /// </remarks>
+    /// <exception cref="NotSupportedException">The domain is not enumerable, or the predicate is not a lambda.</exception>
+    private Expr VisitBoundedQuantifier(MethodCallExpression call, bool isUniversal)
+    {
+        string name = isUniversal ? nameof(Z3Methods.ForAll) : nameof(Z3Methods.Exists);
+
+        if (EvaluateToHostValue(call.Arguments[0]) is not IEnumerable domain)
+        {
+            throw new NotSupportedException($"The domain of {name} must be a finite, host-evaluable sequence.");
+        }
+
+        // A Func argument arrives quoted by the compiler; the lambda inside is what gets applied.
+        Expression predicateArgument = call.Arguments[1] is UnaryExpression { NodeType: ExpressionType.Quote } quoted
+            ? quoted.Operand
+            : call.Arguments[1];
+
+        if (predicateArgument is not LambdaExpression predicate)
+        {
+            throw new NotSupportedException($"The predicate of {name} must be a lambda expression.");
+        }
+
+        var terms = new List<BoolExpr>();
+
+        foreach (object element in domain)
+        {
+            Expression substituted = ParameterSubstituter.SubstituteParameter(
+                predicate,
+                Expression.Constant(element, predicate.Parameters[0].Type));
+
+            // Same reason as in MaterializeVariadicArguments: PartialEval wants a LambdaExpression,
+            // so the substituted body is wrapped and the folded body taken back off.
+            Expression folded = PartialEvaluator.PartialEval(Expression.Lambda(substituted), ExpressionInterpreter.Instance).Body;
+
+            terms.Add(Visit(folded) as BoolExpr ?? throw new InvalidOperationException(
+                $"The predicate of {name} must be Boolean, got {folded.NodeType}."));
+        }
+
+        if (terms.Count == 0)
+        {
+            return isUniversal ? this.context.MkTrue() : this.context.MkFalse();
+        }
+
+        return isUniversal ? this.context.MkAnd(terms.ToArray()) : this.context.MkOr(terms.ToArray());
     }
 
     /// <summary>
