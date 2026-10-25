@@ -103,4 +103,52 @@ public static class Z3Methods
     {
         throw new NotSupportedException("This method should only be used in query expressions.");
     }
+
+    /// <summary>
+    /// Creates a predicate stating that the weighted sum of the given indicators reaches a bound.
+    /// </summary>
+    /// <param name="bound">The lower bound on the weighted sum.</param>
+    /// <param name="weights">One weight per indicator, known at translation time.</param>
+    /// <param name="indicators">Boolean indicators whose weights are summed.</param>
+    /// <returns>Predicate return value.</returns>
+    /// <remarks>
+    /// <para>
+    /// This method should only be used within LINQ expressions. It maps to a native
+    /// <c>MkPBGe</c>, keeping Z3's own pseudo-Boolean propagation.
+    /// </para>
+    /// <para>
+    /// Its point is a band over a group of options carrying unequal costs or contributions, such as
+    /// a nutrition bound over the recipes selected for a meal.
+    /// </para>
+    /// </remarks>
+    public static bool WeightedAtLeast(int bound, int[] weights, params bool[] indicators)
+    {
+        throw new NotSupportedException("This method should only be used in query expressions.");
+    }
+
+    /// <summary>
+    /// Creates a predicate stating that the weighted sum of the given indicators stays under a bound.
+    /// </summary>
+    /// <param name="bound">The upper bound on the weighted sum.</param>
+    /// <param name="weights">One weight per indicator, known at translation time.</param>
+    /// <param name="indicators">Boolean indicators whose weights are summed.</param>
+    /// <returns>Predicate return value.</returns>
+    /// <remarks>This method should only be used within LINQ expressions. It maps to a native <c>MkPBLe</c>.</remarks>
+    public static bool WeightedAtMost(int bound, int[] weights, params bool[] indicators)
+    {
+        throw new NotSupportedException("This method should only be used in query expressions.");
+    }
+
+    /// <summary>
+    /// Creates a predicate stating that the weighted sum of the given indicators equals a bound.
+    /// </summary>
+    /// <param name="bound">The value the weighted sum must take.</param>
+    /// <param name="weights">One weight per indicator, known at translation time.</param>
+    /// <param name="indicators">Boolean indicators whose weights are summed.</param>
+    /// <returns>Predicate return value.</returns>
+    /// <remarks>This method should only be used within LINQ expressions. It maps to a native <c>MkPBEq</c>.</remarks>
+    public static bool WeightedExactly(int bound, int[] weights, params bool[] indicators)
+    {
+        throw new NotSupportedException("This method should only be used in query expressions.");
+    }
 }

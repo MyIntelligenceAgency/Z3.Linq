@@ -37,6 +37,15 @@ internal sealed class ExpressionVisitor
     /// <summary>The definition of <see cref="Z3Methods.AtLeastOne"/>, cached for the call-site match.</summary>
     private static readonly MethodInfo AtLeastOneMethod = typeof(Z3Methods).GetMethod(nameof(Z3Methods.AtLeastOne))!;
 
+    /// <summary>The definition of <see cref="Z3Methods.WeightedAtLeast"/>, cached for the call-site match.</summary>
+    private static readonly MethodInfo WeightedAtLeastMethod = typeof(Z3Methods).GetMethod(nameof(Z3Methods.WeightedAtLeast))!;
+
+    /// <summary>The definition of <see cref="Z3Methods.WeightedAtMost"/>, cached for the call-site match.</summary>
+    private static readonly MethodInfo WeightedAtMostMethod = typeof(Z3Methods).GetMethod(nameof(Z3Methods.WeightedAtMost))!;
+
+    /// <summary>The definition of <see cref="Z3Methods.WeightedExactly"/>, cached for the call-site match.</summary>
+    private static readonly MethodInfo WeightedExactlyMethod = typeof(Z3Methods).GetMethod(nameof(Z3Methods.WeightedExactly))!;
+
     /// <summary>The generic definition of <see cref="Enumerable.ToArray{TSource}"/>, cached for the call-site match.</summary>
     private static readonly MethodInfo EnumerableToArrayMethod =
         typeof(Enumerable).GetMethods().First(m => m.Name == nameof(Enumerable.ToArray));
@@ -572,7 +581,7 @@ internal sealed class ExpressionVisitor
 
         if (isDistinct || isSum)
         {
-            IEnumerable<Expression> distinctExps = MaterializeVariadicArguments(call, method);
+            IEnumerable<Expression> distinctExps = MaterializeVariadicArguments(call.Arguments[0], method);
 
             IEnumerable<Expr> args = from Expression arg in distinctExps
                                      select Visit(arg);
@@ -597,7 +606,7 @@ internal sealed class ExpressionVisitor
             // off the NewArrayExpression like any other literal.
             List<BoolExpr> indicators = [];
 
-            foreach (Expression argument in MaterializeVariadicArguments(call, method))
+            foreach (Expression argument in MaterializeVariadicArguments(call.Arguments[0], method))
             {
                 indicators.Add(Visit(argument) as BoolExpr ?? throw new InvalidOperationException(
                     $"Z3Methods.{method.Name} indicators must be Boolean, got {argument.NodeType}."));
@@ -636,6 +645,53 @@ internal sealed class ExpressionVisitor
                 this.context.MkPBGe(weights, negated, count - 1));
         }
 
+        // The weighted band forms. Same indicators, unequal weights and an explicit bound, all of
+        // which are host values here: the weights describe the group, they are not themselves
+        // unknowns, so they are read off the tree rather than translated into terms.
+        if (method == WeightedAtLeastMethod || method == WeightedAtMostMethod || method == WeightedExactlyMethod)
+        {
+            int bound = Convert.ToInt32(EvaluateToHostValue(call.Arguments[0]));
+
+            int[] weights = EvaluateToHostValue(call.Arguments[1]) as int[] ?? throw new InvalidOperationException(
+                $"Z3Methods.{method.Name} weights must be an int[] known at translation time, got {call.Arguments[1].NodeType}.");
+
+            List<BoolExpr> indicators = [];
+
+            foreach (Expression argument in MaterializeVariadicArguments(call.Arguments[2], method))
+            {
+                indicators.Add(Visit(argument) as BoolExpr ?? throw new InvalidOperationException(
+                    $"Z3Methods.{method.Name} indicators must be Boolean, got {argument.NodeType}."));
+            }
+
+            if (weights.Length != indicators.Count)
+            {
+                throw new InvalidOperationException(
+                    $"Z3Methods.{method.Name} has {weights.Length} weights for {indicators.Count} indicators.");
+            }
+
+            // The weighted sum of an empty group is 0, so the bound alone decides.
+            if (indicators.Count == 0)
+            {
+                bool holds = method == WeightedAtLeastMethod ? bound <= 0
+                    : method == WeightedAtMostMethod ? bound >= 0
+                    : bound == 0;
+
+                return holds ? this.context.MkTrue() : this.context.MkFalse();
+            }
+
+            if (method == WeightedAtLeastMethod)
+            {
+                return this.context.MkPBGe(weights, indicators.ToArray(), bound);
+            }
+
+            if (method == WeightedAtMostMethod)
+            {
+                return this.context.MkPBLe(weights, indicators.ToArray(), bound);
+            }
+
+            return this.context.MkPBEq(weights, indicators.ToArray(), bound);
+        }
+
         if (method.Name.StartsWith("get_"))
         {
             // Assuming it's an indexed property
@@ -656,9 +712,38 @@ internal sealed class ExpressionVisitor
     }
 
     /// <summary>
+    /// Evaluates an expression that must be a host value, not a theorem term.
+    /// </summary>
+    /// <param name="expression">The expression to evaluate.</param>
+    /// <returns>Its value.</returns>
+    /// <remarks>
+    /// Used for the parts of a magic-method call that describe the constraint rather than
+    /// participate in it - a bound, a weight array. The expression is folded first so that a literal,
+    /// a <see cref="NewArrayExpression"/> of literals and a closure-captured member all reduce to the
+    /// same constant. An expression that still depends on the theorem's parameter has no value and
+    /// surfaces as an interpret failure, which is the wanted outcome: a symbolic weight is a
+    /// different constraint, not this one.
+    /// </remarks>
+    private static object? EvaluateToHostValue(Expression expression)
+    {
+        if (expression is ConstantExpression constant)
+        {
+            return constant.Value;
+        }
+
+        // Same MiaPlaza 1.3 constraint as in MaterializeVariadicArguments: PartialEval only takes a
+        // LambdaExpression, so the expression is wrapped and the folded body taken back off.
+        Expression folded = PartialEvaluator.PartialEval(Expression.Lambda(expression), ExpressionInterpreter.Instance).Body;
+
+        return folded is ConstantExpression foldedConstant
+            ? foldedConstant.Value
+            : ExpressionInterpreter.Instance.Interpret(folded);
+    }
+
+    /// <summary>
     /// Materialises the arguments of a variadic magic method into the expressions they stand for.
     /// </summary>
-    /// <param name="call">The call to the magic method.</param>
+    /// <param name="itemsExpression">The <c>params</c> argument of the call.</param>
     /// <param name="method">The method being called, for the diagnostics.</param>
     /// <returns>One expression per argument.</returns>
     /// <remarks>
@@ -668,10 +753,8 @@ internal sealed class ExpressionVisitor
     /// body per element, so the caller sees a flat list either way.
     /// </remarks>
     /// <exception cref="NotSupportedException">The argument has neither shape.</exception>
-    private static IEnumerable<Expression> MaterializeVariadicArguments(MethodCallExpression call, MethodInfo method)
+    private static IEnumerable<Expression> MaterializeVariadicArguments(Expression itemsExpression, MethodInfo method)
     {
-        var itemsExpression = call.Arguments[0];
-
         if (itemsExpression is NewArrayExpression arrExp)
         {
             return arrExp.Expressions;
