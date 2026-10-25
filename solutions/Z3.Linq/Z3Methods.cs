@@ -18,4 +18,27 @@ public static class Z3Methods
     {
         throw new NotSupportedException("This method should only be used in query expressions.");
     }
+
+    /// <summary>
+    /// Creates a term that is the sum of the given terms.
+    /// </summary>
+    /// <typeparam name="T">Type of the terms.</typeparam>
+    /// <param name="terms">Terms to add.</param>
+    /// <returns>The sum.</returns>
+    /// <remarks>
+    /// <para>
+    /// This method should only be used within LINQ expressions. It maps to a single Z3 addition,
+    /// which is variadic, so a sum of any number of terms is one node rather than a left fold of
+    /// pairwise additions.
+    /// </para>
+    /// <para>
+    /// Its point is a sum whose length is not known when the constraint is written: an aggregation
+    /// over a collection, such as <c>Z3Methods.Sum(Enumerable.Range(0, n).Select(i =&gt; g.Cells[i]).ToArray())</c>.
+    /// Writing <c>a + b + c</c> cannot express that.
+    /// </para>
+    /// </remarks>
+    public static T Sum<T>(params T[] terms)
+    {
+        throw new NotSupportedException("This method should only be used in query expressions.");
+    }
 }

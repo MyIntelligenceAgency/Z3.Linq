@@ -25,6 +25,9 @@ internal sealed class ExpressionVisitor
     /// <summary>The generic definition of <see cref="Z3Methods.Distinct{T}"/>, cached for the call-site match.</summary>
     private static readonly MethodInfo DistinctMethod = typeof(Z3Methods).GetMethod(nameof(Z3Methods.Distinct))!;
 
+    /// <summary>The generic definition of <see cref="Z3Methods.Sum{T}"/>, cached for the call-site match.</summary>
+    private static readonly MethodInfo SumMethod = typeof(Z3Methods).GetMethod(nameof(Z3Methods.Sum))!;
+
     /// <summary>The generic definition of <see cref="Enumerable.ToArray{TSource}"/>, cached for the call-site match.</summary>
     private static readonly MethodInfo EnumerableToArrayMethod =
         typeof(Enumerable).GetMethods().First(m => m.Name == nameof(Enumerable.ToArray));
@@ -552,10 +555,14 @@ internal sealed class ExpressionVisitor
             return Visit(result);
         }
 
-        // Filter for known Z3 operators.
-        if (method.IsGenericMethod && method.GetGenericMethodDefinition() == DistinctMethod)
+        // Filter for known Z3 operators: the variadic "magic methods". Both take a params array, so
+        // they share the argument extraction below and differ only in the term built from it.
+        bool isDistinct = method.IsGenericMethod && method.GetGenericMethodDefinition() == DistinctMethod;
+        bool isSum = method.IsGenericMethod && method.GetGenericMethodDefinition() == SumMethod;
+
+        if (isDistinct || isSum)
         {
-            // We know the signature of the Distinct method call. Its argument is a params
+            // We know the signature of the method call. Its argument is a params
             // array, hence we expect a NewArrayExpression.
             IEnumerable? distinctExps = null;
 
@@ -611,7 +618,14 @@ internal sealed class ExpressionVisitor
             IEnumerable<Expr> args = from Expression arg in distinctExps
                                      select Visit(arg);
 
-            return this.context.MkDistinct(args.ToArray());
+            if (isDistinct)
+            {
+                return this.context.MkDistinct(args.ToArray());
+            }
+
+            // Sum -> one addition over the materialised terms. MkAdd is variadic, so the sum of any
+            // number of terms is a single node rather than a fold of pairwise additions.
+            return this.context.MkAdd(args.Cast<ArithExpr>().ToArray());
         }
 
         if (method.Name.StartsWith("get_"))
