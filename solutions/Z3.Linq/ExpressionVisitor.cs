@@ -86,6 +86,24 @@ internal sealed class ExpressionVisitor
         return new ExpressionVisitor(context, environment, param).Visit(expression);
     }
 
+    /// <summary>
+    /// Reports whether an expression mentions one of the <see cref="Z3Methods"/> translation markers.
+    /// </summary>
+    /// <param name="expression">The expression to scan.</param>
+    /// <returns><see langword="true"/> when a marker call appears anywhere in the tree.</returns>
+    /// <remarks>
+    /// A marker's runtime body throws by design - it exists to be read by this visitor, never run -
+    /// so anything that evaluates an expression ahead of translation has to leave such a tree
+    /// alone. See <c>Theorem.TranslateConstraint</c>.
+    /// </remarks>
+    internal static bool MentionsTranslationMarker(Expression expression)
+    {
+        var finder = new MarkerFinder();
+        finder.Visit(expression);
+
+        return finder.Found;
+    }
+
     private Expr Visit(Expression expression)
     {
         // Largely table-driven mechanism, providing constructor lambdas to Visit* methods,
@@ -306,6 +324,11 @@ internal sealed class ExpressionVisitor
                     + $"Build the theorem with {nameof(CollectionHandling)}.{nameof(CollectionHandling.Array)} to index with a symbol.");
 
             return elementEnv.Expr!;
+        }
+
+        if (this.TryFoldClosedRead(expression, out Expr? folded))
+        {
+            return folded!;
         }
 
         return this.context.MkSelect((ArrayExpr)Visit(expression.Left), Visit(expression.Right));
@@ -1063,8 +1086,69 @@ internal sealed class ExpressionVisitor
 
     private Expr VisitIndex(IndexExpression expression, Func<Context, Expr, Expr[], Expr> ctor)
     {
+        if (this.TryFoldClosedRead(expression, out Expr? folded))
+        {
+            return folded!;
+        }
+
         var args = expression.Arguments.Select(Visit).ToArray();
         return ctor(this.context, Visit(expression.Object!), args);
+    }
+
+    /// <summary>
+    /// Evaluates an element read that mentions nothing of the theorem, so the read denotes a constant.
+    /// </summary>
+    /// <param name="expression">A node reading one element out of a captured collection.</param>
+    /// <param name="folded">The Z3 term the element's value translates to, when it was folded.</param>
+    /// <returns><see langword="true"/> when the node was folded.</returns>
+    /// <remarks>
+    /// <c>kcalArr[i]</c> over a captured array arrives as an ArrayIndex whose object is a single
+    /// ConstantExpression holding the whole array, and <c>list[i]</c> as a get_Item call routed
+    /// here through an IndexExpression. The visitor translates scalars, so the array itself used
+    /// to reach <see cref="VisitConstantValue"/> and fail there with "Unsupported constant
+    /// System.Int32[]". Reading one element of a closed collection is a constant, so it is
+    /// evaluated here and translated as such. Two conditions keep this from swallowing anything
+    /// else: the node may mention neither the theorem's parameter nor a Z3Methods marker (both are
+    /// translated, never evaluated), and an evaluation that fails leaves the node to the paths
+    /// that handled it before.
+    /// </remarks>
+    private bool TryFoldClosedRead(Expression expression, out Expr? folded)
+    {
+        folded = null;
+
+        if (ParameterFinder.Contains(expression) || MentionsTranslationMarker(expression))
+        {
+            return false;
+        }
+
+        object? value;
+
+        try
+        {
+            value = Expression.Lambda(expression).Compile(preferInterpretation: true).DynamicInvoke();
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+
+        if (value is null)
+        {
+            return false;
+        }
+
+        try
+        {
+            folded = this.VisitConstantValue(value);
+        }
+        catch (NotSupportedException)
+        {
+            folded = null;
+
+            return false;
+        }
+
+        return true;
     }
 
     /// <summary>
@@ -1177,5 +1261,18 @@ internal sealed class ExpressionVisitor
     internal static long ToUtcTicks(DateTime value)
     {
         return value.Kind == DateTimeKind.Local ? value.ToUniversalTime().Ticks : value.Ticks;
+    }
+
+    /// <summary>Reports whether a Z3Methods marker call appears anywhere in an expression tree.</summary>
+    private sealed class MarkerFinder : ExprVisitor
+    {
+        internal bool Found { get; private set; }
+
+        protected override Expression VisitMethodCall(MethodCallExpression node)
+        {
+            this.Found = this.Found || node.Method.DeclaringType == typeof(Z3Methods);
+
+            return this.Found ? node : base.VisitMethodCall(node);
+        }
     }
 }

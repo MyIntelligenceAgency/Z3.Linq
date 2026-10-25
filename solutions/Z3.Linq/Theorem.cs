@@ -341,7 +341,7 @@ public class Theorem
         for (int index = 0; index < constraintList.Count; index++)
         {
             var constraint = constraintList[index];
-            BoolExpr expression = (BoolExpr)ExpressionVisitor.Translate(ctx, environment, constraint.Body, constraint.Parameters[0]);
+            BoolExpr expression = (BoolExpr)TranslateConstraint(ctx, environment, constraint);
 
             // The tracker carries the index so a reported core maps back to a position in the
             // Where chain; the caller never sees these names.
@@ -423,7 +423,7 @@ public class Theorem
 
         AssertConstraints<T>(ctx, optimizer, environment);
 
-        var expression = ExpressionVisitor.Translate(ctx, environment, lambda.Body, lambda.Parameters[0]);
+        var expression = TranslateConstraint(ctx, environment, lambda);
 
         switch (direction)
         {
@@ -544,6 +544,37 @@ public class Theorem
     }
 
     /// <summary>
+    /// Translates a constraint, folding the closed sub-expressions it contains first.
+    /// </summary>
+    /// <param name="context">Z3 context.</param>
+    /// <param name="environment">Environment with bindings of theorem variables to Z3 handles.</param>
+    /// <param name="constraint">The constraint to translate.</param>
+    /// <returns>Z3 expression handle for the constraint.</returns>
+    /// <remarks>
+    /// A constraint reads captured values in shapes the visitor has no encoding for. The common
+    /// one is an element of a captured collection - <c>kcal[i]</c>, or a captured lookup table -
+    /// which arrives as an ArrayIndex (or a <c>get_Item</c> call) over a ConstantExpression
+    /// holding the whole array; the visitor translates scalars, so the array itself reaches
+    /// <c>VisitConstantValue</c> and fails there with "Unsupported constant System.Int32[]".
+    /// Folding first turns the element access into the constant it denotes. Every subtree that
+    /// mentions the theorem parameter stays free and is left alone by the folder, so a constraint
+    /// mixing both - <c>t.X * weights[0]</c> - still reaches the visitor with its symbol intact.
+    /// One shape must not be folded: a constraint built with the Z3Methods markers carries calls
+    /// whose bodies throw by design - they are translated, never run - so a constraint that
+    /// mentions one skips the fold entirely; the visitor folds the closed element reads of such a
+    /// constraint itself. PartialEval 1.3 accepts only a LambdaExpression, so the constraint is
+    /// passed as the lambda it already is and its folded Body taken back out.
+    /// </remarks>
+    private static Expr TranslateConstraint(Context context, Environment environment, LambdaExpression constraint)
+    {
+        Expression body = ExpressionVisitor.MentionsTranslationMarker(constraint.Body)
+            ? constraint.Body
+            : PartialEvaluator.PartialEval(constraint, ExpressionInterpreter.Instance).Body;
+
+        return ExpressionVisitor.Translate(context, environment, body, constraint.Parameters[0]);
+    }
+
+    /// <summary>
     /// Asserts the theorem constraints on the Z3 context.
     /// </summary>
     /// <param name="context">Z3 context.</param>
@@ -554,7 +585,7 @@ public class Theorem
     {
         foreach (var constraint in GetConstraintsToAssert<T>())
         {
-            BoolExpr expression = (BoolExpr)ExpressionVisitor.Translate(context, environment, constraint.Body, constraint.Parameters[0]);
+            BoolExpr expression = (BoolExpr)TranslateConstraint(context, environment, constraint);
 
             Assert(approach, expression);
 
@@ -571,7 +602,7 @@ public class Theorem
         {
             foreach (var soft in this.softConstraints)
             {
-                BoolExpr softExpression = (BoolExpr)ExpressionVisitor.Translate(context, environment, soft.Constraint.Body, soft.Constraint.Parameters[0]);
+                BoolExpr softExpression = (BoolExpr)TranslateConstraint(context, environment, soft.Constraint);
 
                 softOptimizer.AssertSoft(softExpression, (uint)soft.Weight, soft.Group);
                 this.context.LogWriteLine($"[soft w={soft.Weight} g={soft.Group}] {softExpression}");
