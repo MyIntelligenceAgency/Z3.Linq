@@ -1233,11 +1233,11 @@ public class Theorem
         return typeCode switch
         {
             TypeCode.String => expr.String,
-            TypeCode.Int16 => checked((short)ReadIntegral(expr)),
-            TypeCode.SByte => checked((sbyte)ReadIntegral(expr)),
-            TypeCode.Byte => checked((byte)ReadIntegral(expr)),
-            TypeCode.UInt16 => checked((ushort)ReadIntegral(expr)),
-            TypeCode.Int32 => checked((int)ReadIntegral(expr)),
+            TypeCode.Int16 => (short)ReadNarrow(expr, symbolName, short.MinValue, short.MaxValue),
+            TypeCode.SByte => (sbyte)ReadNarrow(expr, symbolName, sbyte.MinValue, sbyte.MaxValue),
+            TypeCode.Byte => (byte)ReadNarrow(expr, symbolName, byte.MinValue, byte.MaxValue),
+            TypeCode.UInt16 => (ushort)ReadNarrow(expr, symbolName, ushort.MinValue, ushort.MaxValue),
+            TypeCode.Int32 => (int)ReadNarrow(expr, symbolName, int.MinValue, int.MaxValue),
             TypeCode.Int64 => ReadIntegral(expr),
             TypeCode.UInt32 => (uint)((BitVecNum)expr).UInt64,
             TypeCode.UInt64 => ((BitVecNum)expr).UInt64,
@@ -1268,6 +1268,37 @@ public class Theorem
     private static long ReadIntegral(Expr expr)
     {
         return expr is BitVecNum bitVector ? (long)bitVector.UInt64 : ((IntNum)expr).Int64;
+    }
+
+    /// <summary>
+    /// Reads an integral model value and checks that it fits the narrower type it is read as,
+    /// naming the symbol when it does not.
+    /// </summary>
+    /// <param name="expr">The model value.</param>
+    /// <param name="symbolName">The symbol's name, for the message.</param>
+    /// <param name="min">The lowest value the target type holds.</param>
+    /// <param name="max">The highest value the target type holds.</param>
+    /// <returns>The value, as a 64-bit integer, which the caller casts to the target type.</returns>
+    /// <remarks>
+    /// A scalar never reaches this out of range - #87 bounds it to its type's range - so this is
+    /// the collection path, whose element cannot be bounded because its length is not known when
+    /// the constraints are asserted. Naming the symbol is what turns "arithmetic overflow" into a
+    /// diagnosis; a <see cref="DateTime"/> element has always been read this way.
+    /// </remarks>
+    /// <exception cref="OverflowException">The value does not fit the target type.</exception>
+    private static long ReadNarrow(Expr expr, string symbolName, long min, long max)
+    {
+        long value = ReadIntegral(expr);
+        if (value < min || value > max)
+        {
+            throw new OverflowException(
+                $"A model value of {value} for {symbolName} does not fit the type it is read as. "
+                + "A scalar is bounded to its type's range; a collection element is not, because its "
+                + "length is unknown when the constraints are asserted, so Z3 may choose a value no "
+                + "element of that type can hold.");
+        }
+
+        return value;
     }
 
     /// <summary>

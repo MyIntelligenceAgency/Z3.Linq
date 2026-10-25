@@ -1078,10 +1078,14 @@ internal sealed class ExpressionVisitor
 
         if (topMember.Expression != this.param)
         {
-            if ((topMember.Expression is ConstantExpression expression))
+            // Two roots reduce the same way: a captured instance, which is a ConstantExpression,
+            // and a static member, whose root expression is null because there is no instance -
+            // DateTime.MaxValue is a static property, and a bound such as x.D > DateTime.MaxValue
+            // is written against it.
+            if (topMember.Expression is null || topMember.Expression is ConstantExpression)
             {
                 // We only ever get here if SimplifyLambda is set to false, otherwise partial evaluation does it earlier
-                var target = expression.Value;
+                var target = (topMember.Expression as ConstantExpression)?.Value;
                 var hierarchyIdx = 0;
                 object? val = target;
 
@@ -1100,7 +1104,7 @@ internal sealed class ExpressionVisitor
                     {
                         PropertyInfo property => property.GetValue(val),
                         FieldInfo field => field.GetValue(val),
-                        _ => throw new NotSupportedException($"Unsupported constant {target} ."),
+                        _ => throw new NotSupportedException($"Unsupported constant {topMember.Expression} ."),
                     };
 
                     hierarchyIdx++;
