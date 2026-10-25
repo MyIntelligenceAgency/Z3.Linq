@@ -1,77 +1,74 @@
 namespace Z3.Linq.Tests;
 
-using Xunit;
+#pragma warning disable CS1591
 
 /// <summary>
-/// Regression tests for exact rational constants via <see cref="Rational"/> (DSL backlog item B7, #4616).
-/// Real literals were emitted from a CLR <see cref="double"/> through <c>MkReal(value.ToString())</c>, which is
-/// exact for terminating decimals but lossy for non-terminating rationals: <c>1.0 / 3.0</c> stringifies to a
-/// 16-digit truncation, so <c>3 * x == 1</c> turns unsatisfiable. <see cref="Rational"/> carries the exact
-/// <c>num/den</c> fraction into Z3, restoring satisfiability.
+/// Exact rational constants via <see cref="Rational"/>.
 /// </summary>
+/// <remarks>
+/// A real literal reaches Z3 through <c>MkReal(value.ToString())</c>, which is exact for terminating
+/// decimals and lossy for everything else. The contrast in this class is drawn on one-third, where
+/// both forms are written side by side: the exact one multiplies back to 1, the double-derived one
+/// does not.
+/// </remarks>
+[TestClass]
 public class RationalExactTests
 {
+    /// <summary>One real-valued member.</summary>
     public class RealCell
     {
+        /// <summary>Gets or sets the real value.</summary>
         public double X { get; set; }
     }
 
+    /// <summary>An integer and a real member, for the promotion case.</summary>
     public class MixedCell
     {
+        /// <summary>Gets or sets the integer value.</summary>
         public int N { get; set; }
 
+        /// <summary>Gets or sets the real value.</summary>
         public double R { get; set; }
     }
 
-    /// <summary>
-    /// The centrepiece contrast. <c>x == 1/3</c> conjoined with <c>3 * x == 1</c> is satisfiable when 1/3 is an
-    /// exact rational (3 * (1/3) == 1 holds exactly) but unsatisfiable when 1/3 comes from a CLR double (the
-    /// stringified approximation does not multiply back to 1). The two halves of this test share identical
-    /// structure and differ only in how the one-third constant is expressed.
-    /// </summary>
-    [Fact]
+    [TestMethod]
     public void ExactRational_SurvivesArithmetic_WhereDoubleApproximationDoesNot()
     {
+        // The two halves have identical structure and differ only in how one-third is written, which
+        // is what makes the pair a measurement rather than two assumptions.
         using var ctx = new Z3Context();
 
-        // Exact: x == Rational(1,3) and 3*x == 1 -> satisfiable.
         var exact = ctx.NewTheorem<RealCell>()
             .Where(c => c.X == Rational.Of(1, 3))
-            .Where(c => c.X * 3.0 == 1.0)
+            .Where(c => (c.X * 3.0) == 1.0)
             .Solve();
 
-        Assert.NotNull(exact);
+        exact.ShouldNotBeNull();
 
-        // Lossy: the same predicate with a CLR double 1.0/3.0 -> unsatisfiable.
         var approximate = ctx.NewTheorem<RealCell>()
             .Where(c => c.X == 1.0 / 3.0)
-            .Where(c => c.X * 3.0 == 1.0)
+            .Where(c => (c.X * 3.0) == 1.0)
             .Solve();
 
-        Assert.Null(approximate);
+        approximate.ShouldBeNull();
     }
 
-    /// <summary>
-    /// A second non-terminating rational: <c>x == 2/7</c> with <c>7 * x == 2</c> is satisfiable exactly.
-    /// </summary>
-    [Fact]
+    [TestMethod]
     public void ExactRational_TwoSevenths_MultipliesBack()
     {
+        // A second non-terminating fraction, so the first test's result is not read as a property of
+        // one third in particular.
         using var ctx = new Z3Context();
 
         var solution = ctx.NewTheorem<RealCell>()
             .Where(c => c.X == Rational.Of(2, 7))
-            .Where(c => c.X * 7.0 == 2.0)
+            .Where(c => (c.X * 7.0) == 2.0)
             .Solve();
 
-        Assert.NotNull(solution);
+        solution.ShouldNotBeNull();
     }
 
-    /// <summary>
-    /// The rational can sit on either side of a relational constraint over a real member; an inconsistent pair
-    /// of exact bounds is unsatisfiable (<c>x &gt;= 1/2</c> and <c>x &lt; 1/3</c>).
-    /// </summary>
-    [Fact]
+    [TestMethod]
     public void ExactRational_AsRelationalBound_BothOrders()
     {
         using var ctx = new Z3Context();
@@ -81,66 +78,62 @@ public class RationalExactTests
             .Where(c => Rational.Of(3, 4) >= c.X)
             .Solve();
 
-        Assert.NotNull(feasible);
-        Assert.InRange(feasible!.X, 0.5, 0.75);
+        feasible.ShouldNotBeNull();
+        feasible!.X.ShouldBeInRange(0.5, 0.75);
 
         var infeasible = ctx.NewTheorem<RealCell>()
             .Where(c => c.X >= Rational.Of(1, 2))
             .Where(c => c.X < Rational.Of(1, 3))
             .Solve();
 
-        Assert.Null(infeasible);
+        infeasible.ShouldBeNull();
     }
 
-    /// <summary>
-    /// A negative / sign-normalised rational: <c>Rational(1, -2)</c> reduces to <c>-1/2</c>, and the equality
-    /// constraint pins the real member to it.
-    /// </summary>
-    [Fact]
+    [TestMethod]
     public void Rational_NormalisesSignAndReduces()
     {
-        Assert.Equal(-1, new Rational(1, -2).Numerator);
-        Assert.Equal(2, new Rational(1, -2).Denominator);
-        Assert.Equal(1, new Rational(2, 4).Numerator);
-        Assert.Equal(2, new Rational(2, 4).Denominator);
+        var negative = new Rational(1, -2);
+        negative.Numerator.ShouldBe(-1);
+        negative.Denominator.ShouldBe(2);
+
+        var reducible = new Rational(2, 4);
+        reducible.Numerator.ShouldBe(1);
+        reducible.Denominator.ShouldBe(2);
 
         using var ctx = new Z3Context();
 
         var solution = ctx.NewTheorem<RealCell>()
-            .Where(c => c.X == Rational.Of(3, -6)) // == -1/2
-            .Where(c => c.X * 2.0 == -1.0)
+            .Where(c => c.X == Rational.Of(3, -6))
+
+            // Three sixths negative is minus one half; the arithmetic constraint confirms the value
+            // rather than trusting the display.
+            .Where(c => (c.X * 2.0) == -1.0)
             .Solve();
 
-        Assert.NotNull(solution);
+        solution.ShouldNotBeNull();
     }
 
-    /// <summary>
-    /// A zero denominator is rejected eagerly.
-    /// </summary>
-    [Fact]
+    [TestMethod]
     public void Rational_ZeroDenominator_Throws()
     {
-        Assert.Throws<System.DivideByZeroException>(() => new Rational(1, 0));
+        Should.Throw<DivideByZeroException>(() => new Rational(1, 0));
     }
 
-    /// <summary>
-    /// Cast-matrix completion (B7): an int-to-real promotion (<c>c.R == c.N</c>, where C# inserts a
-    /// <c>Convert(int -&gt; double)</c>) lifts the integer member to a real via MkInt2Real, so the mixed
-    /// equality is solvable.
-    /// </summary>
-    [Fact]
+    [TestMethod]
     public void IntToReal_Promotion_IsSolvable()
     {
+        // The compiler inserts Convert(int -> double) in c.R == c.N, which has to lift the integer
+        // member to a real rather than refuse the cast.
         using var ctx = new Z3Context();
 
         var solution = ctx.NewTheorem<MixedCell>()
             .Where(c => c.N == 3)
-            .Where(c => c.R == c.N)       // Convert(int -> double) -> MkInt2Real
+            .Where(c => c.R == c.N)
             .Where(c => c.R == Rational.Of(3, 1))
             .Solve();
 
-        Assert.NotNull(solution);
-        Assert.Equal(3, solution!.N);
-        Assert.Equal(3.0, solution.R, 6);
+        solution.ShouldNotBeNull();
+        solution!.N.ShouldBe(3);
+        solution.R.ShouldBe(3.0, 1e-6);
     }
 }

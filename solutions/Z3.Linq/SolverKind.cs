@@ -1,30 +1,37 @@
 namespace Z3.Linq;
 
 /// <summary>
-/// Selects which Z3 solver a <see cref="Z3Context"/> creates when solving a theorem.
-/// Configurable solver/tactic selection is DSL backlog item B10 (#4616): the previous code
-/// hard-coded <c>ctx.MkSolver()</c>, so a logic-specialized or lightweight solver could not
-/// be chosen even when the constraint fragment allowed a faster one.
+/// Selects which Z3 solver a <see cref="Z3Context"/> builds when a theorem is checked.
 /// </summary>
+/// <remarks>
+/// The solve path used to hard-code <c>Context.MkSolver()</c>, so a solver specialised to the
+/// constraint fragment could not be chosen even when the fragment was known - and a restricted
+/// solver is markedly faster than the general-purpose one on the logic it was built for.
+/// </remarks>
 public enum SolverKind
 {
     /// <summary>
-    /// Z3's general-purpose combined solver (<c>ctx.MkSolver()</c>). Default; preserves
-    /// the historical behavior and accepts any supported constraint.
+    /// Z3's general-purpose combined solver. The default, and the one that accepts any supported
+    /// constraint.
     /// </summary>
     Default = 0,
 
     /// <summary>
-    /// The lightweight incremental solver (<c>ctx.MkSimpleSolver()</c>) — the solver the
-    /// original endjin code referenced in a commented-out line. Useful for many small
-    /// incremental checks.
+    /// The lightweight incremental solver, for many small incremental checks.
     /// </summary>
+    /// <remarks>
+    /// Worth knowing before choosing it: it does not support the hypothesis tracking an
+    /// unsatisfiable core is extracted from, so a diagnostic path stays on the combined solver
+    /// whatever this says.
+    /// </remarks>
     Simple = 1,
 
     /// <summary>
-    /// A solver specialized to a named SMT-LIB logic (<c>ctx.MkSolver(logic)</c>); the logic
-    /// is taken from <see cref="Z3Context.Logic"/> (e.g. <c>"QF_LIA"</c>, <c>"QF_BV"</c>).
-    /// Faster on the restricted fragment, but rejects constraints outside it.
+    /// A solver specialised to the SMT-LIB logic named by <see cref="Z3Context.Logic"/>.
     /// </summary>
+    /// <remarks>
+    /// Faster on the restricted fragment, and it rejects constraints outside it - which is the
+    /// point when the fragment is what a broken constraint violates.
+    /// </remarks>
     Logic = 2,
 }

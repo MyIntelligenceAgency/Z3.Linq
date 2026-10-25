@@ -1,24 +1,38 @@
 namespace Z3.Linq.Tests;
 
-using System.Linq;
-using Xunit;
+#pragma warning disable CS1591
 
 /// <summary>
-/// Regression tests for the diagnostic <c>Theorem&lt;T&gt;.Explain()</c> surface (DSL backlog item B6, #4616).
-/// <c>Solve()</c> collapses every non-satisfiable outcome to <c>default(T)</c> — so "no solution exists" and
-/// "the solver could not decide" are indistinguishable, and there is no way to learn <em>why</em> a set of
-/// constraints is contradictory. <c>Explain()</c> distinguishes Satisfiable / Unsatisfiable / Unknown and, on
-/// UNSAT, returns the minimal UNSAT core (the conflicting subset of hard <c>.Where</c> constraints). It is a
-/// parallel, non-breaking surface: <c>Solve()</c> is unchanged.
+/// The diagnostic surface <see cref="Theorem{T}.Explain"/>.
 /// </summary>
+/// <remarks>
+/// <see cref="Theorem{T}.Solve(CancellationToken)"/> collapses every non-satisfiable outcome to <c>default(T)</c>, so
+/// "no solution exists" and "the solver could not decide" arrive as the same value, and nothing
+/// says <em>which</em> constraints contradict each other. This class holds both halves: the status
+/// is reported as Z3 reports it, and on a conflict the core names the constraints whose removal
+/// would restore satisfiability.
+/// </remarks>
+[TestClass]
 public class ExplainUnsatCoreTests
 {
+    /// <summary>One integer.</summary>
     public class Cell
     {
+        /// <summary>Gets or sets the value.</summary>
         public int X { get; set; }
     }
 
-    [Fact]
+    /// <summary>Two integers, for a conflict that spans symbols.</summary>
+    public class TwoCells
+    {
+        /// <summary>Gets or sets the first value.</summary>
+        public int A { get; set; }
+
+        /// <summary>Gets or sets the second value.</summary>
+        public int B { get; set; }
+    }
+
+    [TestMethod]
     public void Explain_ReportsSatisfiable_WhenConsistent()
     {
         using var ctx = new Z3Context();
@@ -28,34 +42,35 @@ public class ExplainUnsatCoreTests
             .Where(c => c.X <= 10)
             .Explain();
 
-        Assert.Equal(SolveStatus.Satisfiable, explanation.Status);
-        Assert.True(explanation.IsSatisfiable);
-        Assert.Empty(explanation.UnsatCore);
+        explanation.Status.ShouldBe(SolveStatus.Satisfiable);
+        explanation.IsSatisfiable.ShouldBeTrue();
+        explanation.UnsatCore.ShouldBeEmpty();
+        explanation.ToString().ShouldBe("Satisfiable");
     }
 
-    [Fact]
+    [TestMethod]
     public void Explain_ReportsUnsatisfiable_WithConflictingConstraints()
     {
+        // #0 and #2 conflict; #1 is innocent and satisfiable alongside either of them alone, so a
+        // core that named it would be blaming a constraint the refutation does not need.
         using var ctx = new Z3Context();
 
-        // Three constraints; #0 and #2 conflict (X==1 vs X==2). #1 is satisfiable on its own and should NOT
-        // be part of the minimal core.
         var explanation = ctx.NewTheorem<Cell>()
-            .Where(c => c.X == 1)   // #0
-            .Where(c => c.X >= 0)   // #1 (innocent)
-            .Where(c => c.X == 2)   // #2
+            .Where(c => c.X == 1)
+            .Where(c => c.X >= 0)
+            .Where(c => c.X == 2)
             .Explain();
 
-        Assert.Equal(SolveStatus.Unsatisfiable, explanation.Status);
-        Assert.False(explanation.IsSatisfiable);
+        explanation.Status.ShouldBe(SolveStatus.Unsatisfiable);
+        explanation.IsSatisfiable.ShouldBeFalse();
 
-        var coreIndexes = explanation.UnsatCore.Select(c => c.Index).ToArray();
-        Assert.Contains(0, coreIndexes);
-        Assert.Contains(2, coreIndexes);
-        Assert.DoesNotContain(1, coreIndexes); // the innocent constraint is excluded from the minimal core
+        int[] coreIndexes = explanation.UnsatCore.Select(core => core.Index).ToArray();
+        coreIndexes.ShouldContain(0);
+        coreIndexes.ShouldContain(2);
+        coreIndexes.ShouldNotContain(1);
     }
 
-    [Fact]
+    [TestMethod]
     public void Explain_CoreCarriesSourceExpression()
     {
         using var ctx = new Z3Context();
@@ -65,50 +80,68 @@ public class ExplainUnsatCoreTests
             .Where(c => c.X == 6)
             .Explain();
 
-        Assert.Equal(SolveStatus.Unsatisfiable, explanation.Status);
-        Assert.Equal(2, explanation.UnsatCore.Count);
-        // The reported core references the source expressions (string form), not just indexes.
-        Assert.All(explanation.UnsatCore, c => Assert.False(string.IsNullOrWhiteSpace(c.Expression)));
-        Assert.Contains(explanation.UnsatCore, c => c.Expression.Contains("== 5") || c.Expression.Contains("==5"));
+        explanation.Status.ShouldBe(SolveStatus.Unsatisfiable);
+        explanation.UnsatCore.Count.ShouldBe(2);
+        explanation.UnsatCore.ShouldAllBe(core => !string.IsNullOrWhiteSpace(core.Expression));
+        explanation.UnsatCore.ShouldContain(core => core.Expression.Contains("== 5", StringComparison.Ordinal));
+        explanation.ToString().ShouldContain("#");
     }
 
-    [Fact]
+    [TestMethod]
     public void Explain_DoesNotAlterSolve()
     {
         using var ctx = new Z3Context();
 
-        // A satisfiable theorem: Explain() then Solve() must both behave normally (no shared mutable state).
         var theorem = ctx.NewTheorem<Cell>()
             .Where(c => c.X == 42);
 
         var explanation = theorem.Explain();
         var solution = theorem.Solve();
 
-        Assert.Equal(SolveStatus.Satisfiable, explanation.Status);
-        Assert.NotNull(solution);
-        Assert.Equal(42, solution!.X);
+        explanation.Status.ShouldBe(SolveStatus.Satisfiable);
+        solution.ShouldNotBeNull();
+        solution!.X.ShouldBe(42);
     }
 
-    public class TwoCells
-    {
-        public int A { get; set; }
-        public int B { get; set; }
-    }
-
-    [Fact]
+    [TestMethod]
     public void Explain_TransitiveConflict_AllThreeInCore()
     {
+        // Two inequalities that cannot both hold: the refutation needs both, so both are named.
         using var ctx = new Z3Context();
 
-        // A < B, B < A+0 (i.e. B < A), and A != B are mutually contradictory via the first two alone.
         var explanation = ctx.NewTheorem<TwoCells>()
-            .Where(t => t.A < t.B)  // #0
-            .Where(t => t.B < t.A)  // #1
+            .Where(t => t.A < t.B)
+            .Where(t => t.B < t.A)
             .Explain();
 
-        Assert.Equal(SolveStatus.Unsatisfiable, explanation.Status);
-        var coreIndexes = explanation.UnsatCore.Select(c => c.Index).ToArray();
-        Assert.Contains(0, coreIndexes);
-        Assert.Contains(1, coreIndexes);
+        explanation.Status.ShouldBe(SolveStatus.Unsatisfiable);
+
+        int[] coreIndexes = explanation.UnsatCore.Select(core => core.Index).ToArray();
+        coreIndexes.ShouldContain(0);
+        coreIndexes.ShouldContain(1);
+    }
+
+    [TestMethod]
+    public void Explain_AgreesWithSolve_OnATypeBoundConflict()
+    {
+        // int.MaxValue + 1 cannot be held by an int, so the solve path answers "no solution" through
+        // the range it asserts on the symbol. The diagnostic agrees with it, and still names the
+        // constraint that conflicts with the range rather than returning an empty core.
+        using var ctx = new Z3Context();
+
+        var theorem = ctx.NewTheorem<Cell>()
+            .Where(c => c.X > int.MaxValue);
+
+        theorem.TrySolve(out Cell? solution).ShouldBeFalse();
+        solution.ShouldBeNull();
+
+        var explanation = theorem.Explain().Status;
+        explanation.ShouldBe(SolveStatus.Unsatisfiable);
+
+        ctx.NewTheorem<Cell>()
+            .Where(c => c.X > int.MaxValue)
+            .Explain()
+            .UnsatCore
+            .ShouldContain(core => core.Index == 0);
     }
 }

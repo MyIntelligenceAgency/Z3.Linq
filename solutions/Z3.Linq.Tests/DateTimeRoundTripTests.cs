@@ -1,34 +1,23 @@
 namespace Z3.Linq.Tests;
 
-using System;
-using System.Collections.Generic;
-using Xunit;
+#pragma warning disable CS1591
 
 /// <summary>
-/// Round-trip regression tests for <see cref="DateTime"/> symbols (#14445).
-/// The write path encoded an instant as a Windows file time (<c>ToFileTimeUtc</c>, counted
-/// from 1601-01-01) and the read path decoded with <c>FromFileTime</c> (local time): nothing
-/// before 1601 could be written (<see cref="ArgumentOutOfRangeException"/>), and a read-back
-/// came out <see cref="DateTimeKind.Local"/> with the machine's UTC offset baked in. Port of
-/// endjin/Z3.Linq#95 (their #56/#83): ticks on the UTC timeline both ways.
+/// Round trips for <see cref="DateTime"/> symbols: an instant on the UTC timeline, both ways.
 /// </summary>
+/// <remarks>
+/// An instant is encoded as ticks on the UTC timeline. Encoding it as a Windows file time instead
+/// (counted from 1601-01-01) meant nothing earlier could be written at all, and decoding it as local
+/// time came back <see cref="DateTimeKind.Local"/> with the machine's UTC offset baked in - so the
+/// same theorem answered differently on two runners. Both assertions below are needed: a Kind
+/// assertion fails everywhere, and a ticks assertion fails on every runner whose offset is not zero.
+/// </remarks>
+[TestClass]
 public class DateTimeRoundTripTests
 {
-    public class DateTimeBag
-    {
-        public DateTime D { get; set; }
-    }
-
-    public class DateTimeListBag
-    {
-        public List<DateTime> Values { get; set; } = new() { default, default };
-    }
-
-    [Fact]
+    [TestMethod]
     public void Solve_DateTimeBefore1601_RoundTrips()
     {
-        // ToFileTimeUtc threw ArgumentOutOfRangeException for any instant before 1601-01-01,
-        // so this theorem could not even be expressed (#14445 defect 1).
         var instant = new DateTime(1500, 1, 1, 0, 0, 0, DateTimeKind.Utc);
         using var ctx = new Z3Context();
 
@@ -36,19 +25,14 @@ public class DateTimeRoundTripTests
             .Where(b => b.D == instant)
             .Solve();
 
-        Assert.NotNull(solution);
-        Assert.Equal(instant, solution!.D);
-        Assert.Equal(DateTimeKind.Utc, solution.D.Kind);
+        solution.ShouldNotBeNull();
+        solution!.D.ShouldBe(instant);
+        solution.D.Kind.ShouldBe(DateTimeKind.Utc);
     }
 
-    [Fact]
+    [TestMethod]
     public void Solve_DateTime_RoundTripsAsUtcWithSameTicks()
     {
-        // FromFileTime returned Kind=Local: the Kind assertion fails on every runner (a UTC
-        // runner has a zero offset but the Kind is still Local), the Ticks assertion fails on
-        // every non-UTC one. Asserting BOTH pins the defect on the CI runner itself, per the
-        // #14445 acceptance amendment (a ToUniversalTime() comparison passes before the fix
-        // and measures nothing).
         var instant = new DateTime(2026, 1, 15, 12, 0, 0, DateTimeKind.Utc);
         using var ctx = new Z3Context();
 
@@ -56,15 +40,15 @@ public class DateTimeRoundTripTests
             .Where(b => b.D == instant)
             .Solve();
 
-        Assert.NotNull(solution);
-        Assert.Equal(DateTimeKind.Utc, solution!.D.Kind);
-        Assert.Equal(instant.Ticks, solution.D.Ticks);
+        solution.ShouldNotBeNull();
+        solution!.D.Kind.ShouldBe(DateTimeKind.Utc);
+        solution.D.Ticks.ShouldBe(instant.Ticks);
     }
 
-    [Fact]
+    [TestMethod]
     public void Solve_DateTimeListBefore1601_RoundTripsEveryElement()
     {
-        // The element read goes through its own DateTime arm: the encoding fix has to hold
+        // A collection element is read through its own DateTime arm, so the encoding has to hold
         // there too, not only on the scalar path.
         var instant = new DateTime(1582, 10, 15, 0, 0, 0, DateTimeKind.Utc);
         using var ctx = new Z3Context();
@@ -73,42 +57,52 @@ public class DateTimeRoundTripTests
             .Where(b => b.Values[0] == instant)
             .Solve();
 
-        Assert.NotNull(solution);
-        Assert.Equal(instant, solution!.Values[0]);
-        Assert.Equal(DateTimeKind.Utc, solution.Values[0].Kind);
+        solution.ShouldNotBeNull();
+        solution!.Values[0].ShouldBe(instant);
+        solution.Values[0].Kind.ShouldBe(DateTimeKind.Utc);
     }
 
-    [Fact]
+    [TestMethod]
     public void Solve_DateTimeBeyondRange_IsUnsatisfiable()
     {
-        // The symbol used to be an unbounded integer to Z3: t.D > DateTime.MaxValue was
-        // satisfiable with ticks no DateTime can hold, and the read threw. It is now bounded to
-        // the type's range (endjin/Z3.Linq#87, ported as their #98), so the true answer is
-        // "no model" rather than "a model that cannot be read".
+        // A scalar symbol is bounded to its type's range, so an instant past DateTime.MaxValue is
+        // "no model" rather than a model whose ticks no DateTime can hold.
         using var ctx = new Z3Context();
 
         var solution = ctx.NewTheorem<DateTimeBag>()
             .Where(b => b.D > DateTime.MaxValue)
             .Solve();
 
-        Assert.Null(solution);
+        solution.ShouldBeNull();
     }
 
-    [Fact]
-    public void Solve_DateTimeInListBeyondRange_StillThrowsNamingTheSymbol()
+    [TestMethod]
+    public void Solve_DateTimeInListBeyondRange_ThrowsNamingTheSymbol()
     {
-        // The bounds reach scalars only. A collection is an array from Int to the element sort and
-        // its length is not known when the theorem is built, so an element is still read with a
-        // checked conversion -- and that read is what this pins. Without it, dropping the old
-        // scalar test above would have removed the only coverage of the checked element read
-        // (règle anti-régression : on déplace la couverture, on ne la supprime pas).
+        // The bounds reach scalars only: a collection is an array from Int to the element sort and
+        // its length is not known when the theorem is built, so the element read stays a checked
+        // conversion. This pins that read - dropping it would leave the element path uncovered.
         using var ctx = new Z3Context();
 
-        var ex = Assert.Throws<OverflowException>(() =>
+        var exception = Should.Throw<OverflowException>(() =>
             ctx.NewTheorem<DateTimeListBag>()
                 .Where(b => b.Values[0] > DateTime.MaxValue)
                 .Solve());
 
-        Assert.Contains("Values", ex.Message);
+        exception.Message.ShouldContain("Values");
+    }
+
+    /// <summary>One instant.</summary>
+    public class DateTimeBag
+    {
+        /// <summary>Gets or sets the instant.</summary>
+        public DateTime D { get; set; }
+    }
+
+    /// <summary>Two instants, for the element path.</summary>
+    public class DateTimeListBag
+    {
+        /// <summary>Gets or sets the instants.</summary>
+        public List<DateTime> Values { get; set; } = [default, default];
     }
 }

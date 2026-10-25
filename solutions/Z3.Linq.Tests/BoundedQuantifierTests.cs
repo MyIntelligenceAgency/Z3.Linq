@@ -1,98 +1,115 @@
 namespace Z3.Linq.Tests;
 
-using System;
-using System.Linq;
-
-using Xunit;
+#pragma warning disable CS1591
 
 /// <summary>
-/// Tests for bounded quantifiers <see cref="Z3Methods.ForAll{T}"/> / <see cref="Z3Methods.Exists{T}"/>
-/// (DSL backlog item B8, #4616).
-///
-/// These are finite-domain quantifiers: the domain is evaluated in the host and the predicate is
-/// unrolled into a conjunction (<c>ForAll</c> -> <c>MkAnd</c>) or disjunction (<c>Exists</c> ->
-/// <c>MkOr</c>) over each element. They let a single <c>.Where(...)</c> express what previously
-/// required a C# loop emitting one <c>.Where</c> per index (cf. CollectionHandlingTests, which
-/// unrolls cell constraints by hand). They are NOT true SMT quantifiers over an unbounded sort.
+/// The bounded quantifiers: <see cref="Z3Methods.ForAll{T}"/> and <see cref="Z3Methods.Exists{T}"/>.
 /// </summary>
+/// <remarks>
+/// They are finite-domain quantifiers. The domain is a host value and the predicate is unrolled over
+/// it, so a single <c>Where</c> expresses what would otherwise need a loop emitting one constraint per
+/// index. They are not SMT quantifiers over an unbounded sort, and this class says so where the
+/// distinction is observable: the empty domain.
+/// </remarks>
+[TestClass]
 public class BoundedQuantifierTests
 {
+    /// <summary>Four integers, the domain the quantifiers range over.</summary>
     public class ArrayEnv
     {
+        /// <summary>Gets or sets the four values.</summary>
         public int[] Values { get; set; } = new int[4];
     }
 
-    [Fact]
+    [TestMethod]
     public void ForAll_BoundsEveryElement()
     {
-        // A single ForAll constrains all four array cells to [1, 9].
+        // One constraint, four bounds: the unrolled conjunction is what makes all four hold at once.
         using var ctx = new Z3Context();
-        var result = ctx.NewTheorem<ArrayEnv>()
+
+        var solution = ctx.NewTheorem<ArrayEnv>()
             .Where(e => Z3Methods.ForAll(Enumerable.Range(0, 4), i => e.Values[i] >= 1 && e.Values[i] <= 9))
             .Solve();
 
-        Assert.NotNull(result);
-        Assert.Equal(4, result!.Values.Length);
-        Assert.All(result.Values, v => Assert.InRange(v, 1, 9));
+        solution.ShouldNotBeNull();
+        solution!.Values.Length.ShouldBe(4);
+        solution.Values.ShouldAllBe(value => value >= 1 && value <= 9);
     }
 
-    [Fact]
+    [TestMethod]
     public void Exists_RequiresAtLeastOneWitness()
     {
-        // Every element in [0, 5], and at least one element must equal exactly 5.
         using var ctx = new Z3Context();
-        var result = ctx.NewTheorem<ArrayEnv>()
+
+        var solution = ctx.NewTheorem<ArrayEnv>()
             .Where(e => Z3Methods.ForAll(Enumerable.Range(0, 4), i => e.Values[i] >= 0 && e.Values[i] <= 5))
             .Where(e => Z3Methods.Exists(Enumerable.Range(0, 4), i => e.Values[i] == 5))
             .Solve();
 
-        Assert.NotNull(result);
-        Assert.All(result!.Values, v => Assert.InRange(v, 0, 5));
-        Assert.Contains(5, result.Values);
+        solution.ShouldNotBeNull();
+        solution!.Values.ShouldAllBe(value => value >= 0 && value <= 5);
+        solution.Values.ShouldContain(5);
     }
 
-    [Fact]
+    [TestMethod]
     public void ForAll_CombinesWithExists_ForExactlyConstrainedShape()
     {
-        // All in [0, 10]; some element is 0 and some element is 10.
+        // The bounds hold everywhere while two named values each occur somewhere - the shape that
+        // needs both quantifiers, since neither alone can state it.
         using var ctx = new Z3Context();
-        var result = ctx.NewTheorem<ArrayEnv>()
+
+        var solution = ctx.NewTheorem<ArrayEnv>()
             .Where(e => Z3Methods.ForAll(Enumerable.Range(0, 4), i => e.Values[i] >= 0 && e.Values[i] <= 10))
             .Where(e => Z3Methods.Exists(Enumerable.Range(0, 4), i => e.Values[i] == 0))
             .Where(e => Z3Methods.Exists(Enumerable.Range(0, 4), i => e.Values[i] == 10))
             .Solve();
 
-        Assert.NotNull(result);
-        Assert.All(result!.Values, v => Assert.InRange(v, 0, 10));
-        Assert.Contains(0, result.Values);
-        Assert.Contains(10, result.Values);
+        solution.ShouldNotBeNull();
+        solution!.Values.ShouldAllBe(value => value >= 0 && value <= 10);
+        solution.Values.ShouldContain(0);
+        solution.Values.ShouldContain(10);
     }
 
-    [Fact]
+    [TestMethod]
     public void ForAll_EmptyDomain_IsVacuouslyTrue()
     {
-        // The predicate is a contradiction (v > v); over a non-empty domain this would be UNSAT.
-        // Over the empty domain the universal quantifier must be vacuously true, so the theorem,
-        // constrained only by a satisfiable bound, stays SAT.
+        // The predicate is a contradiction, so over a non-empty domain this would be unsatisfiable.
+        // Over the empty domain it holds, and the rest of the theorem decides the solution.
         using var ctx = new Z3Context();
-        var result = ctx.NewTheorem<ArrayEnv>()
+
+        var solution = ctx.NewTheorem<ArrayEnv>()
             .Where(e => Z3Methods.ForAll(Array.Empty<int>(), i => e.Values[i] > e.Values[i]))
             .Where(e => e.Values[0] == 7)
             .Solve();
 
-        Assert.NotNull(result);
-        Assert.Equal(7, result!.Values[0]);
+        solution.ShouldNotBeNull();
+        solution!.Values[0].ShouldBe(7);
     }
 
-    [Fact]
+    [TestMethod]
     public void Exists_EmptyDomain_IsVacuouslyFalse()
     {
-        // An existential over the empty domain is false, making the theorem unsatisfiable.
         using var ctx = new Z3Context();
-        var result = ctx.NewTheorem<ArrayEnv>()
+
+        var solution = ctx.NewTheorem<ArrayEnv>()
             .Where(e => Z3Methods.Exists(Array.Empty<int>(), i => e.Values[i] == 0))
             .Solve();
 
-        Assert.Null(result);
+        solution.ShouldBeNull();
+    }
+
+    [TestMethod]
+    public void ForAll_OverARuntimeDomain_IsTranslated()
+    {
+        // The point of the shape: the domain size is a value, not the number of lambdas written out.
+        using var ctx = new Z3Context();
+        int size = 4;
+
+        var solution = ctx.NewTheorem<ArrayEnv>()
+            .Where(e => Z3Methods.ForAll(Enumerable.Range(0, size), i => e.Values[i] != 0))
+            .Solve();
+
+        solution.ShouldNotBeNull();
+        solution!.Values.ShouldAllBe(value => value != 0);
     }
 }

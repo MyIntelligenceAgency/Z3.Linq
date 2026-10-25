@@ -1,145 +1,113 @@
 namespace Z3.Linq.Tests;
 
-using Xunit;
+#pragma warning disable CS1591
 
 /// <summary>
-/// Regression tests for fixed-width bit-vector variables via <c>[BitVecWidth(n)]</c> (DSL backlog item B4,
-/// #4616). Before B4 every integral theorem variable was a mathematical (unbounded) integer, so modular and
-/// overflow arithmetic — the entire point of fixed-width machine integers — was inexpressible. B4 binds a
-/// <c>[BitVecWidth(n)]</c> property to an n-bit Z3 bit-vector, routes <c>+</c>/<c>-</c>/<c>*</c> through the
-/// modular bit-vector operators and the relational operators through the unsigned bit-vector comparisons.
-///
-/// The centrepiece is <see cref="OverflowPredicate_IsSat_OnBitVector_ButUnsat_OnInteger"/>: the predicate
-/// <c>a + b &lt; a</c> with <c>b &gt;= 1</c> is satisfiable under bit-vectors (the sum wraps) yet unsatisfiable
-/// under integers (a natural sum never shrinks). A trivial example would not exercise this distinction; the
-/// pair makes the bit-vector engine's distinctive capability visible in the result.
+/// Fixed-width bit-vector variables declared with <c>[BitVecWidth(n)]</c>.
 /// </summary>
+/// <remarks>
+/// Every integral theorem variable is otherwise a mathematical (unbounded) integer, so modular and
+/// overflow arithmetic - the entire point of fixed-width machine integers - is inexpressible. The
+/// attribute binds a property to an n-bit Z3 bit-vector, routes <c>+</c>/<c>-</c>/<c>*</c> through the
+/// modular bit-vector operators and the relational operators through the unsigned bit-vector
+/// comparisons.
+/// <para>
+/// The centrepiece is <see cref="OverflowPredicate_IsSat_OnBitVector_ButUnsat_OnInteger"/>: the
+/// predicate <c>a + b &lt; a</c> with <c>b &gt;= 1</c> is satisfiable under bit-vectors (the sum wraps)
+/// yet unsatisfiable under integers (a natural sum never shrinks). A trivial example would not
+/// exercise this distinction; the pair makes the bit-vector engine's distinctive capability visible
+/// in the result.
+/// </para>
+/// </remarks>
+[TestClass]
 public class BitVectorTheoryTests
 {
-    /// <summary>A pair of 4-bit unsigned registers (values 0..15, arithmetic modulo 16).</summary>
-    public class Reg4
-    {
-        [BitVecWidth(4)]
-        public int A { get; set; }
-
-        [BitVecWidth(4)]
-        public int B { get; set; }
-    }
-
-    /// <summary>An 8-bit register (values 0..255).</summary>
-    public class Reg8
-    {
-        [BitVecWidth(8)]
-        public int X { get; set; }
-    }
-
-    /// <summary>A plain integer pair: the mathematical-integer foil for the bit-vector overflow predicate.</summary>
-    public class PlainPair
-    {
-        public int A { get; set; }
-
-        public int B { get; set; }
-    }
-
-    /// <summary>
-    /// The defining property of fixed-width arithmetic: addition wraps. <c>a + b &lt; a</c> with <c>b &gt;= 1</c>
-    /// is satisfiable over bit-vectors (the sum overflows the 4-bit range and wraps below <c>a</c>) but
-    /// unsatisfiable over mathematical integers (a sum with a positive addend never decreases). This is the
-    /// non-trivial problem that distinguishes the bit-vector theory from the integer theory.
-    /// </summary>
-    [Fact]
+    [TestMethod]
     public void OverflowPredicate_IsSat_OnBitVector_ButUnsat_OnInteger()
     {
         using var ctx = new Z3Context();
 
         // Bit-vector: overflow is reachable.
-        var bvSolution = ctx.NewTheorem<Reg4>()
+        var bitVectorSolution = ctx.NewTheorem<Reg4>()
             .Where(r => r.B >= 1)
-            .Where(r => r.A + r.B < r.A) // wraps modulo 16 => sum lands below A
+            .Where(r => r.A + r.B < r.A) // wraps modulo 16, so the sum lands below A
             .Solve();
 
-        Assert.NotNull(bvSolution);
-        Assert.InRange(bvSolution!.A, 0, 15);
-        Assert.InRange(bvSolution.B, 1, 15);
-        Assert.True((bvSolution.A + bvSolution.B) % 16 < bvSolution.A, "the witnessed sum must wrap below A");
+        bitVectorSolution.ShouldNotBeNull();
+        bitVectorSolution!.A.ShouldBeInRange(0, 15);
+        bitVectorSolution.B.ShouldBeInRange(1, 15);
+        ((bitVectorSolution.A + bitVectorSolution.B) % 16 < bitVectorSolution.A)
+            .ShouldBeTrue("the witnessed sum must wrap below A");
 
-        // Integer theory: the same predicate (with non-negative operands) is unsatisfiable — no overflow exists.
-        var intSolution = ctx.NewTheorem<PlainPair>()
+        // Integer theory: the same predicate (with non-negative operands) is unsatisfiable - no
+        // overflow exists, so the pair above is not something a plain integer theorem could answer.
+        var integerSolution = ctx.NewTheorem<PlainPair>()
             .Where(p => p.A >= 0)
             .Where(p => p.B >= 1)
             .Where(p => p.A + p.B < p.A)
             .Solve();
 
-        Assert.Null(intSolution);
+        integerSolution.ShouldBeNull();
     }
 
-    /// <summary>
-    /// Exact modular value: over 4 bits, <c>15 + 1 == 0</c> (16 wraps to 0). The DSL must accept the equality
-    /// against the wrapped literal and return the pinned operands.
-    /// </summary>
-    [Fact]
+    [TestMethod]
     public void ModularAddition_WrapsToZero()
     {
+        // Over 4 bits, 15 + 1 == 0 (16 wraps to 0). The DSL must accept the equality against the
+        // wrapped literal and return the pinned operands.
         using var ctx = new Z3Context();
 
         var solution = ctx.NewTheorem<Reg4>()
             .Where(r => r.A == 15)
             .Where(r => r.B == 1)
-            .Where(r => r.A + r.B == 0) // 16 mod 16 == 0
+            .Where(r => r.A + r.B == 0)
             .Solve();
 
-        Assert.NotNull(solution);
-        Assert.Equal(15, solution!.A);
-        Assert.Equal(1, solution.B);
+        solution.ShouldNotBeNull();
+        solution!.A.ShouldBe(15);
+        solution.B.ShouldBe(1);
     }
 
-    /// <summary>
-    /// Multiplication wraps too: over 4 bits, <c>4 * 4 == 16 == 0</c>. A non-zero product collapsing to zero
-    /// is only possible under modular semantics.
-    /// </summary>
-    [Fact]
+    [TestMethod]
     public void ModularMultiplication_WrapsToZero()
     {
+        // Multiplication wraps too: over 4 bits, 4 * 4 == 16 == 0. A non-zero product collapsing to
+        // zero is only possible under modular semantics.
         using var ctx = new Z3Context();
 
         var solution = ctx.NewTheorem<Reg4>()
             .Where(r => r.A == 4)
             .Where(r => r.B == 4)
-            .Where(r => r.A * r.B == 0) // 16 mod 16 == 0
+            .Where(r => r.A * r.B == 0)
             .Solve();
 
-        Assert.NotNull(solution);
-        Assert.Equal(4, solution!.A);
-        Assert.Equal(4, solution.B);
+        solution.ShouldNotBeNull();
+        solution!.A.ShouldBe(4);
+        solution.B.ShouldBe(4);
     }
 
-    /// <summary>
-    /// When the sum stays within range there is no wrap, and the no-overflow predicate <c>a + b &gt;= a</c>
-    /// holds — confirming the operators behave like ordinary arithmetic away from the boundary.
-    /// </summary>
-    [Fact]
+    [TestMethod]
     public void NoOverflow_WhenSumFitsInWidth()
     {
+        // Away from the boundary the operators behave like ordinary arithmetic: 3 + 4 = 7 >= 3.
         using var ctx = new Z3Context();
 
         var solution = ctx.NewTheorem<Reg4>()
             .Where(r => r.A == 3)
             .Where(r => r.B == 4)
-            .Where(r => r.A + r.B >= r.A) // 7 >= 3, no wrap
+            .Where(r => r.A + r.B >= r.A)
             .Solve();
 
-        Assert.NotNull(solution);
-        Assert.Equal(3, solution!.A);
-        Assert.Equal(4, solution.B);
+        solution.ShouldNotBeNull();
+        solution!.A.ShouldBe(3);
+        solution.B.ShouldBe(4);
     }
 
-    /// <summary>
-    /// An integer literal in a relational constraint is coerced to a width-matched bit-vector, and the
-    /// comparison uses unsigned bit-vector ordering. <c>A &gt; 8</c> restricts a 4-bit value to 9..15.
-    /// </summary>
-    [Fact]
+    [TestMethod]
     public void IntegerLiteral_IsCoercedToBitVectorWidth()
     {
+        // A literal carries no sort of its own, so it has to be coerced to the width of the
+        // bit-vector it faces. A > 8 restricts a 4-bit value to 9..15.
         using var ctx = new Z3Context();
 
         var solution = ctx.NewTheorem<Reg4>()
@@ -147,41 +115,67 @@ public class BitVectorTheoryTests
             .Where(r => r.B == 0)
             .Solve();
 
-        Assert.NotNull(solution);
-        Assert.True(solution!.A > 8 && solution.A <= 15);
-        Assert.Equal(0, solution.B);
+        solution.ShouldNotBeNull();
+        (solution!.A > 8 && solution.A <= 15).ShouldBeTrue($"Expected A in 9..15, got {solution.A}.");
+        solution.B.ShouldBe(0);
     }
 
-    /// <summary>
-    /// The declared width is honored at read-back: a value of 200 round-trips intact on an 8-bit register
-    /// (it would have wrapped to 8 on a 4-bit one), proving the bit-vector sort carries the attribute's width.
-    /// </summary>
-    [Fact]
+    [TestMethod]
     public void DeclaredWidth_IsRespected_OnReadBack()
     {
+        // The width is honoured on the way out too: 200 survives intact on an 8-bit register, where
+        // a 4-bit one would have wrapped it to 8.
         using var ctx = new Z3Context();
 
         var solution = ctx.NewTheorem<Reg8>()
             .Where(r => r.X == 200)
             .Solve();
 
-        Assert.NotNull(solution);
-        Assert.Equal(200, solution!.X); // 200 needs 8 bits; survives intact
+        solution.ShouldNotBeNull();
+        solution!.X.ShouldBe(200);
     }
 
-    /// <summary>
-    /// Unsigned comparison semantics: over 4 bits there is no value strictly greater than 15, so an
-    /// out-of-range lower bound is unsatisfiable. <c>A &gt; 15</c> has no 4-bit witness.
-    /// </summary>
-    [Fact]
+    [TestMethod]
     public void UnsignedComparison_HasNoWitnessAboveMax()
     {
+        // Unsigned semantics: over 4 bits nothing is strictly greater than 15, so an out-of-range
+        // lower bound has no witness.
         using var ctx = new Z3Context();
 
         var solution = ctx.NewTheorem<Reg4>()
-            .Where(r => r.A > 15) // 15 is the 4-bit maximum; nothing exceeds it
+            .Where(r => r.A > 15)
             .Solve();
 
-        Assert.Null(solution);
+        solution.ShouldBeNull();
+    }
+
+    /// <summary>A pair of 4-bit unsigned registers (values 0..15, arithmetic modulo 16).</summary>
+    public class Reg4
+    {
+        /// <summary>Gets or sets the first register.</summary>
+        [BitVecWidth(4)]
+        public int A { get; set; }
+
+        /// <summary>Gets or sets the second register.</summary>
+        [BitVecWidth(4)]
+        public int B { get; set; }
+    }
+
+    /// <summary>An 8-bit register (values 0..255).</summary>
+    public class Reg8
+    {
+        /// <summary>Gets or sets the register.</summary>
+        [BitVecWidth(8)]
+        public int X { get; set; }
+    }
+
+    /// <summary>A plain integer pair: the mathematical-integer foil for the overflow predicate.</summary>
+    public class PlainPair
+    {
+        /// <summary>Gets or sets the first integer.</summary>
+        public int A { get; set; }
+
+        /// <summary>Gets or sets the second integer.</summary>
+        public int B { get; set; }
     }
 }

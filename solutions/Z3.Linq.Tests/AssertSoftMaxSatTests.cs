@@ -1,145 +1,149 @@
 namespace Z3.Linq.Tests;
 
-using System;
-using Xunit;
+#pragma warning disable CS1591
 
 /// <summary>
-/// Regression tests for weighted-MaxSAT soft constraints via <c>Theorem&lt;T&gt;.SoftWhere</c> (DSL backlog
-/// item B1, #4616). A soft constraint is not required to hold: when it conflicts with the hard constraints
-/// (or with a higher-weight soft constraint), the optimizer leaves it violated and pays its weight, minimizing
-/// the total weight of violated soft constraints. Before B1, the DSL had only hard <c>.Where</c> constraints
-/// (a violated constraint simply made the theorem UNSAT — <c>null</c>); there was no way to express
-/// "satisfy this if you can, but prefer the other".
+/// The soft constraints of <see cref="Theorem{T}.SoftWhere"/>: weighted MaxSAT.
 /// </summary>
+/// <remarks>
+/// A soft constraint is not required to hold. When it conflicts with the hard constraints or with a
+/// heavier soft constraint, the optimizer leaves it unsatisfied and pays its weight, minimising the
+/// total weight it leaves unsatisfied. Without it the DSL had only hard constraints, so "satisfy
+/// this if you can, but prefer that one" could not be written at all: a violated constraint simply
+/// made the theorem unsatisfiable.
+/// </remarks>
+[TestClass]
 public class AssertSoftMaxSatTests
 {
+    /// <summary>Two flags, which a hard XOR forces apart.</summary>
     public class Flags
     {
+        /// <summary>Gets or sets the first flag.</summary>
         public bool A { get; set; }
+
+        /// <summary>Gets or sets the second flag.</summary>
         public bool B { get; set; }
     }
 
-    /// <summary>
-    /// Two soft constraints in direct conflict via a hard XOR (exactly one of A, B is true). The higher-weight
-    /// soft constraint must win: weight(A) > weight(B) => A is honored, B is sacrificed.
-    /// </summary>
-    [Fact]
-    public void HigherWeightSoftConstraint_WinsConflict()
-    {
-        using var ctx = new Z3Context();
-
-        // Hard: A xor B (exactly one true). Soft: prefer A (weight 10) and prefer B (weight 1).
-        var theorem = ctx.NewTheorem<Flags>()
-            .Where(f => f.A ^ f.B)
-            .SoftWhere(f => f.A, weight: 10)
-            .SoftWhere(f => f.B, weight: 1);
-
-        var result = theorem.Solve();
-
-        Assert.NotNull(result);
-        Assert.True(result!.A);   // higher-weight soft constraint honored
-        Assert.False(result.B);   // lower-weight soft constraint sacrificed
-        Assert.True(result.A ^ result.B); // hard constraint still respected
-    }
-
-    /// <summary>
-    /// Symmetric check: flipping the weights flips the outcome, proving the weight (not declaration order)
-    /// drives the decision.
-    /// </summary>
-    [Fact]
-    public void FlippingWeights_FlipsOutcome()
-    {
-        using var ctx = new Z3Context();
-
-        var theorem = ctx.NewTheorem<Flags>()
-            .Where(f => f.A ^ f.B)
-            .SoftWhere(f => f.A, weight: 1)
-            .SoftWhere(f => f.B, weight: 10);
-
-        var result = theorem.Solve();
-
-        Assert.NotNull(result);
-        Assert.False(result!.A);
-        Assert.True(result.B);
-    }
-
-    /// <summary>
-    /// A soft constraint compatible with the hard constraints is satisfied (no reason to violate it).
-    /// </summary>
-    [Fact]
-    public void CompatibleSoftConstraint_IsSatisfied()
-    {
-        using var ctx = new Z3Context();
-
-        var theorem = ctx.NewTheorem<Flags>()
-            .Where(f => f.A ^ f.B)
-            .SoftWhere(f => f.A, weight: 5); // no conflicting soft constraint
-
-        var result = theorem.Solve();
-
-        Assert.NotNull(result);
-        Assert.True(result!.A);
-        Assert.False(result.B);
-    }
-
-    /// <summary>
-    /// Soft constraints never make a satisfiable hard problem UNSAT: even an impossible soft constraint
-    /// (paired against a hard fact) just gets sacrificed, and a model is still returned.
-    /// </summary>
-    [Fact]
-    public void ImpossibleSoftConstraint_DoesNotMakeProblemUnsat()
-    {
-        using var ctx = new Z3Context();
-
-        // Hard: A is true. Soft: A is false (impossible) — sacrificed, model still returned.
-        var theorem = ctx.NewTheorem<Flags>()
-            .Where(f => f.A)
-            .SoftWhere(f => !f.A, weight: 100);
-
-        var result = theorem.Solve();
-
-        Assert.NotNull(result);
-        Assert.True(result!.A); // hard wins; soft sacrificed
-    }
-
-    /// <summary>
-    /// A non-positive weight is rejected eagerly (Z3 <c>AssertSoft</c> takes an unsigned weight; a 0 or
-    /// negative weight is a programming error rather than "free to violate").
-    /// </summary>
-    [Theory]
-    [InlineData(0)]
-    [InlineData(-3)]
-    public void NonPositiveWeight_Throws(int weight)
-    {
-        using var ctx = new Z3Context();
-
-        Assert.Throws<ArgumentOutOfRangeException>(
-            () => ctx.NewTheorem<Flags>().SoftWhere(f => f.A, weight));
-    }
-
-    /// <summary>
-    /// Numeric MaxSAT: maximize the number of satisfied soft equalities on an integer cell whose hard
-    /// constraint pins it to a single value. Two soft constraints want different values; the higher-weight
-    /// one wins, and the lower-weight one is paid.
-    /// </summary>
+    /// <summary>One integer, for the numeric form.</summary>
     public class Cell
     {
+        /// <summary>Gets or sets the value.</summary>
         public int X { get; set; }
     }
 
-    [Fact]
-    public void NumericSoftConstraints_HigherWeightTargetWins()
+    [TestMethod]
+    public void HigherWeightSoftConstraint_WinsConflict()
     {
+        // The hard XOR admits exactly one of A and B, so the two soft constraints cannot both hold
+        // and the weights decide which one is sacrificed.
         using var ctx = new Z3Context();
 
-        var theorem = ctx.NewTheorem<Cell>()
+        var result = ctx.NewTheorem<Flags>()
+            .Where(f => f.A ^ f.B)
+            .SoftWhere(f => f.A, weight: 10)
+            .SoftWhere(f => f.B, weight: 1)
+            .Solve();
+
+        result.ShouldNotBeNull();
+        result!.A.ShouldBeTrue();
+        result.B.ShouldBeFalse();
+    }
+
+    [TestMethod]
+    public void FlippingWeights_FlipsOutcome()
+    {
+        // The same theorem with the weights swapped: the outcome follows the weight, not the order
+        // the soft constraints were declared in.
+        using var ctx = new Z3Context();
+
+        var result = ctx.NewTheorem<Flags>()
+            .Where(f => f.A ^ f.B)
+            .SoftWhere(f => f.A, weight: 1)
+            .SoftWhere(f => f.B, weight: 10)
+            .Solve();
+
+        result.ShouldNotBeNull();
+        result!.A.ShouldBeFalse();
+        result.B.ShouldBeTrue();
+    }
+
+    [TestMethod]
+    public void CompatibleSoftConstraint_IsSatisfied()
+    {
+        // Nothing competes with it, so sacrificing it would buy nothing.
+        using var ctx = new Z3Context();
+
+        var result = ctx.NewTheorem<Flags>()
+            .Where(f => f.A ^ f.B)
+            .SoftWhere(f => f.A, weight: 5)
+            .Solve();
+
+        result.ShouldNotBeNull();
+        result!.A.ShouldBeTrue();
+    }
+
+    [TestMethod]
+    public void ImpossibleSoftConstraint_DoesNotMakeProblemUnsat()
+    {
+        // A soft constraint that contradicts a hard fact is paid for, and a model is still
+        // returned: this is the property that makes the constraint soft.
+        using var ctx = new Z3Context();
+
+        var result = ctx.NewTheorem<Flags>()
+            .Where(f => f.A)
+            .SoftWhere(f => !f.A, weight: 100)
+            .Solve();
+
+        result.ShouldNotBeNull();
+        result!.A.ShouldBeTrue();
+    }
+
+    [TestMethod]
+    [DataRow(0)]
+    [DataRow(-3)]
+    public void NonPositiveWeight_Throws(int weight)
+    {
+        // Z3 takes an unsigned weight, and a weight of zero would mean "free to violate" - a
+        // programming error rather than a trade-off, so it fails at the call rather than on solve.
+        using var ctx = new Z3Context();
+
+        Should.Throw<ArgumentOutOfRangeException>(
+            () => ctx.NewTheorem<Flags>().SoftWhere(f => f.A, weight));
+    }
+
+    [TestMethod]
+    public void NumericSoftConstraints_HigherWeightTargetWins()
+    {
+        // Two values wanted by constraints of different weight, over the same symbol.
+        using var ctx = new Z3Context();
+
+        var result = ctx.NewTheorem<Cell>()
             .Where(c => c.X >= 0 && c.X <= 9)
             .SoftWhere(c => c.X == 3, weight: 2)
-            .SoftWhere(c => c.X == 7, weight: 5);
+            .SoftWhere(c => c.X == 7, weight: 5)
+            .Solve();
 
-        var result = theorem.Solve();
+        result.ShouldNotBeNull();
+        result!.X.ShouldBe(7);
+    }
 
-        Assert.NotNull(result);
-        Assert.Equal(7, result!.X); // weight 5 > weight 2
+    [TestMethod]
+    public void SoftWhereThenWhere_KeepsTheSoftConstraint()
+    {
+        // A hard constraint added after a soft one must not drop it: the two lists travel separately
+        // through the Where chain, and losing one there would silently turn a trade-off into a
+        // requirement.
+        using var ctx = new Z3Context();
+
+        var result = ctx.NewTheorem<Flags>()
+            .SoftWhere(f => f.A, weight: 10)
+            .SoftWhere(f => f.B, weight: 1)
+            .Where(f => f.A ^ f.B)
+            .Solve();
+
+        result.ShouldNotBeNull();
+        result!.A.ShouldBeTrue();
+        result.B.ShouldBeFalse();
     }
 }

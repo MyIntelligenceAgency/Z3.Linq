@@ -1,0 +1,58 @@
+<Project>
+
+  <!-- Language and platform settings shared by every project in the solution. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!-- Deliberately no PlatformTarget. Microsoft.Z3 5.1.0 ships native binaries for x64
+         and arm64 on all three platforms, so AnyCPU lets each machine resolve the one it
+         needs; pinning x64 here would shut arm64 out. -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- Generate the XML documentation file for every project. Two reasons. It makes the
+         compiler parse the doc comments, so malformed XML and unresolvable crefs are build
+         errors under TreatWarningsAsErrors rather than something a reviewer has to spot; and
+         it gives the packable projects a documentation file to ship, without which consumers
+         get no IntelliSense. CS1591 - a public member with no comment - is enforced only for
+         Z3.Linq; the other projects suppress it, each saying why. See #82. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <!-- Package metadata common to the packable projects. Per-package values stay in the
+       individual project files: PackageTags, plus Description (Z3.Linq) or
+       PackageDescription (Z3.Linq.Examples) - MSBuild accepts either for the package
+       description. -->
+  <PropertyGroup>
+    <Authors>bartdesmet, endjin, Ricardo Niepel, Jean-Sylvain Boige, Karel Frajtak</Authors>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/endjin/Z3.Linq</PackageProjectUrl>
+    <PackageRequireLicenseAcceptance>True</PackageRequireLicenseAcceptance>
+    <RepositoryUrl>https://github.com/endjin/Z3.Linq</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+  </PropertyGroup>
+
+  <!-- Let SourceLink (bundled in the .NET SDK) fill in RepositoryBranch/RepositoryCommit
+       and embed the repo URL in the package. -->
+  <PropertyGroup>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <!-- Deterministic, CI-tagged builds when running under GitHub Actions. -->
+    <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+
+  <!--
+    MSTest.Sdk adds Microsoft.Testing.Extensions.CodeCoverage implicitly and pins its version
+    via this property, defaulting to an older build than the dotnet-coverage collector that the
+    ZeroFailed test task runs. The reference is injected from a .targets file imported AFTER the
+    project body, so a per-project <PackageReference Update VersionOverride> would be a no-op -
+    setting the property here, early in the SDK chain, is the supported override. Keep it in step
+    with the collector version.
+
+    Note there is deliberately NO PackageVersion for this package in Directory.Packages.props:
+    under CPM the SDK injects its own PackageVersion from this property, and a second one trips
+    NU1506 on restore.
+  -->
+  <PropertyGroup>
+    <MicrosoftTestingExtensionsCodeCoverageVersion>18.10.0</MicrosoftTestingExtensionsCodeCoverageVersion>
+  </PropertyGroup>
+</Project>

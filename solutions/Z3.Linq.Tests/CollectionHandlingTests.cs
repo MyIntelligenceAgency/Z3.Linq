@@ -1,194 +1,273 @@
 namespace Z3.Linq.Tests;
 
-using Microsoft.Z3;
-using System;
-using System.Linq;
-using Xunit;
+#pragma warning disable CS1591
 
 /// <summary>
-/// Keystone tests for the resurrected <see cref="CollectionHandling"/> modes.
-///
-/// Both modes must solve the same constraint problem on a nested int[][] grid and produce a
-/// satisfying assignment. The Array mode exercises Z3 array theory (a single ArrayExpr with
-/// Select); the Constants mode exercises one Z3 constant per element (the classic endjin binding
-/// model, lazily created on index access via <see cref="MultipleEnvironment"/>).
-///
-/// These tests are the proof that the previously-dead CollectionHandling enum is now wired end-to-end
-/// (environment construction → constraint visiting → model extraction) in both modes.
+/// The two <see cref="CollectionHandling"/> modes must solve the same constraint problem and
+/// produce the same kind of satisfying assignment.
 /// </summary>
+/// <remarks>
+/// <para>
+/// <see cref="CollectionHandling.Array"/> exercises Z3 array theory: one array constant, read
+/// with Select. <see cref="CollectionHandling.Constants"/> exercises one constant per element,
+/// created lazily on index access through <see cref="MultipleEnvironment"/>. A nested
+/// <c>int[][]</c> grid is the smallest shape that exercises both the mode switch and the
+/// recursion into a row.
+/// </para>
+/// <para>
+/// These tests are the proof that the mode is wired end to end - environment construction,
+/// constraint translation and model extraction - rather than being a flag nothing reads.
+/// </para>
+/// </remarks>
+[TestClass]
 public class CollectionHandlingTests
 {
     /// <summary>
-    /// 4x4 Sudoku grid modeled as int[][]: the smallest nested-array CSP that exercises both modes.
+    /// A 4x4 Sudoku grid modelled as <c>int[][]</c>: a nested collection, one row per element, in
+    /// both modes.
     /// </summary>
     public class SudokuGrid4
     {
-        public int[][] Cells { get; set; } = new int[4][];
-
-        public SudokuGrid4()
-        {
-            for (int i = 0; i < 4; i++)
-            {
-                Cells[i] = new int[4];
-            }
-        }
+        /// <summary>
+        /// Gets or sets the cells of the grid, four rows of four.
+        /// </summary>
+        public int[][] Cells { get; set; } = [new int[4], new int[4], new int[4], new int[4]];
     }
 
-    private static Theorem<SudokuGrid4> BuildSudoku4x4(Z3Context ctx)
+    private static Theorem<SudokuGrid4> BuildNestedSudoku4x4(Z3Context ctx)
     {
         var theorem = ctx.NewTheorem<SudokuGrid4>();
 
-        // Each cell in [1,4].
         for (int i = 0; i < 4; i++)
         {
             for (int j = 0; j < 4; j++)
             {
-                int i1 = i, j1 = j;
-                theorem = theorem.Where(g => g.Cells[i1][j1] >= 1 && g.Cells[i1][j1] <= 4);
+                int row = i, column = j;
+                theorem = theorem.Where(g => g.Cells[row][column] >= 1 && g.Cells[row][column] <= 4);
             }
         }
 
-        // Row distinctness (explicit args — the pattern supported by the Distinct rewriter).
         for (int r = 0; r < 4; r++)
         {
-            int r1 = r;
+            int row = r;
             theorem = theorem.Where(g => Z3Methods.Distinct(
-                g.Cells[r1][0], g.Cells[r1][1], g.Cells[r1][2], g.Cells[r1][3]));
+                g.Cells[row][0], g.Cells[row][1], g.Cells[row][2], g.Cells[row][3]));
         }
 
-        // Column distinctness.
         for (int c = 0; c < 4; c++)
         {
-            int c1 = c;
+            int column = c;
             theorem = theorem.Where(g => Z3Methods.Distinct(
-                g.Cells[0][c1], g.Cells[1][c1], g.Cells[2][c1], g.Cells[3][c1]));
+                g.Cells[0][column], g.Cells[1][column], g.Cells[2][column], g.Cells[3][column]));
         }
 
         return theorem;
     }
 
-    [Theory]
-    [InlineData(CollectionHandling.Array)]
-    [InlineData(CollectionHandling.Constants)]
-    public void Sudoku4x4_IsSolvable_InBothModes(CollectionHandling mode)
+    [TestMethod]
+    [DataRow(CollectionHandling.Array)]
+    [DataRow(CollectionHandling.Constants)]
+    public void NestedGrid_IsSolvable_InBothModes(CollectionHandling mode)
     {
         using var ctx = new Z3Context { DefaultCollectionHandling = mode };
-        var solution = BuildSudoku4x4(ctx).Solve();
 
-        Assert.NotNull(solution);
-        Assert.All(solution!.Cells, row => Assert.All(row, v => Assert.InRange(v, 1, 4)));
+        var solution = BuildNestedSudoku4x4(ctx).Solve();
 
-        // A valid 4x4 Latin square: each row and each column is a permutation of 1..4.
-        for (int r = 0; r < 4; r++)
+        solution.ShouldNotBeNull();
+
+        foreach (int[] row in solution!.Cells)
         {
-            Assert.Equal(new int[] { 1, 2, 3, 4 }, solution.Cells[r].OrderBy(v => v));
+            row.OrderBy(v => v).ShouldBe([1, 2, 3, 4]);
         }
 
         for (int c = 0; c < 4; c++)
         {
-            Assert.Equal(new int[] { 1, 2, 3, 4 }, Enumerable.Range(0, 4).Select(r => solution.Cells[r][c]).OrderBy(v => v));
+            int column = c;
+            Enumerable.Range(0, 4).Select(r => solution.Cells[r][column]).OrderBy(v => v).ShouldBe([1, 2, 3, 4]);
         }
     }
 
-    [Theory]
-    [InlineData(CollectionHandling.Array)]
-    [InlineData(CollectionHandling.Constants)]
-    public void Sudoku4x4_RespectsHint_InBothModes(CollectionHandling mode)
+    [TestMethod]
+    [DataRow(CollectionHandling.Array)]
+    [DataRow(CollectionHandling.Constants)]
+    public void NestedGrid_RespectsHint_InBothModes(CollectionHandling mode)
     {
         using var ctx = new Z3Context { DefaultCollectionHandling = mode };
-        var theorem = BuildSudoku4x4(ctx).Where(g => g.Cells[0][0] == 2);
 
-        var solution = theorem.Solve();
+        var solution = BuildNestedSudoku4x4(ctx).Where(g => g.Cells[1][2] == 3).Solve();
 
-        Assert.NotNull(solution);
-        Assert.Equal(2, solution!.Cells[0][0]);
-    }
-
-    [Fact]
-    public void ConstantsMode_DefaultsToArray_OnBareContext()
-    {
-        // Anti-regression guard: a context with no explicit mode must default to Array,
-        // preserving the historical (pre-resurrection) behavior.
-        using var ctx = new Z3Context();
-        Assert.Equal(CollectionHandling.Array, ctx.DefaultCollectionHandling);
+        solution.ShouldNotBeNull();
+        solution!.Cells[1][2].ShouldBe(3);
     }
 
     /// <summary>
-    /// Flat int[] (non-nested) collection in Constants mode — the simplest shape that must work
-    /// now that MultipleEnvironment is wired. Three cells, all equal to 7.
+    /// A 4x4 Sudoku grid held in a flat <c>int[16]</c>: the smallest CSP that exercises both modes
+    /// with more than a handful of symbols.
+    /// </summary>
+    public class FlatSudokuGrid4
+    {
+        /// <summary>
+        /// Gets or sets the sixteen cells, row-major: cell (r, c) is <c>Cells[4 * r + c]</c>.
+        /// </summary>
+        public int[] Cells { get; set; } = new int[16];
+    }
+
+    private static Theorem<FlatSudokuGrid4> BuildSudoku4x4(Z3Context ctx)
+    {
+        var theorem = ctx.NewTheorem<FlatSudokuGrid4>();
+
+        for (int i = 0; i < 16; i++)
+        {
+            int cell = i;
+            theorem = theorem.Where(g => g.Cells[cell] >= 1 && g.Cells[cell] <= 4);
+        }
+
+        for (int r = 0; r < 4; r++)
+        {
+            int first = 4 * r;
+            theorem = theorem.Where(g => Z3Methods.Distinct(
+                g.Cells[first], g.Cells[first + 1], g.Cells[first + 2], g.Cells[first + 3]));
+        }
+
+        for (int c = 0; c < 4; c++)
+        {
+            int first = c;
+            theorem = theorem.Where(g => Z3Methods.Distinct(
+                g.Cells[first], g.Cells[first + 4], g.Cells[first + 8], g.Cells[first + 12]));
+        }
+
+        return theorem;
+    }
+
+    [TestMethod]
+    [DataRow(CollectionHandling.Array)]
+    [DataRow(CollectionHandling.Constants)]
+    public void Sudoku4x4_IsSolvable_InBothModes(CollectionHandling mode)
+    {
+        using var ctx = new Z3Context { DefaultCollectionHandling = mode };
+
+        var solution = BuildSudoku4x4(ctx).Solve();
+
+        solution.ShouldNotBeNull();
+
+        foreach (int cell in solution!.Cells)
+        {
+            cell.ShouldBeInRange(1, 4);
+        }
+
+        // A valid 4x4 Latin square: every row and every column is a permutation of 1..4.
+        for (int r = 0; r < 4; r++)
+        {
+            int first = 4 * r;
+            Enumerable.Range(0, 4).Select(o => solution.Cells[first + o]).OrderBy(v => v).ShouldBe([1, 2, 3, 4]);
+        }
+
+        for (int c = 0; c < 4; c++)
+        {
+            int first = c;
+            Enumerable.Range(0, 4).Select(o => solution.Cells[first + (4 * o)]).OrderBy(v => v).ShouldBe([1, 2, 3, 4]);
+        }
+    }
+
+    [TestMethod]
+    [DataRow(CollectionHandling.Array)]
+    [DataRow(CollectionHandling.Constants)]
+    public void Sudoku4x4_RespectsHint_InBothModes(CollectionHandling mode)
+    {
+        using var ctx = new Z3Context { DefaultCollectionHandling = mode };
+
+        var solution = BuildSudoku4x4(ctx).Where(g => g.Cells[0] == 2).Solve();
+
+        solution.ShouldNotBeNull();
+        solution!.Cells[0].ShouldBe(2);
+    }
+
+    [TestMethod]
+    public void ConstantsMode_DefaultsToArray_OnBareContext()
+    {
+        // Anti-regression guard: a context that never sets the mode must keep the historical
+        // behaviour, which is the array-theory one.
+        using var ctx = new Z3Context();
+
+        ctx.DefaultCollectionHandling.ShouldBe(CollectionHandling.Array);
+    }
+
+    /// <summary>
+    /// A flat (non-nested) <c>int[]</c> in constants mode: the simplest shape that exercises the
+    /// per-element path.
     /// </summary>
     public class Triple
     {
+        /// <summary>
+        /// Gets or sets three integer values.
+        /// </summary>
         public int[] Values { get; set; } = new int[3];
     }
 
-    [Fact]
+    [TestMethod]
     public void ConstantsMode_FlatIntArray_SolvesWithPerElementConstants()
     {
         using var ctx = new Z3Context { DefaultCollectionHandling = CollectionHandling.Constants };
 
-        var theorem = ctx.NewTheorem<Triple>()
+        var solution = ctx.NewTheorem<Triple>()
             .Where(t => t.Values[0] == t.Values[1])
             .Where(t => t.Values[1] == t.Values[2])
-            .Where(t => t.Values[0] == 7);
+            .Where(t => t.Values[0] == 7)
+            .Solve();
 
-        var solution = theorem.Solve();
-
-        Assert.NotNull(solution);
-        Assert.Equal(7, solution!.Values[0]);
-        Assert.Equal(7, solution.Values[1]);
-        Assert.Equal(7, solution.Values[2]);
+        solution.ShouldNotBeNull();
+        solution!.Values[0].ShouldBe(7);
+        solution.Values[1].ShouldBe(7);
+        solution.Values[2].ShouldBe(7);
     }
 
     /// <summary>
-    /// Regression: in Constants mode an index that the constraints never reference is not materialized
-    /// as a Z3 constant. Such a free index used to leak a null into the extracted result, and
-    /// ArrayList.ToArray(typeof(int)) then threw InvalidCastException
-    /// ("could not be cast down to the destination array type"). The free index must come back as
-    /// default(int) = 0, since an unconstrained cell admits any value.
+    /// An index the constraints never reference is not materialised as a Z3 constant. Such a free
+    /// index used to leak a null into the extracted result and blow up in
+    /// <c>ArrayList.ToArray(typeof(int))</c>; it must come back as the element type's default.
     /// </summary>
-    [Fact]
+    [TestMethod]
     public void ConstantsMode_ValueTypeArray_WithInteriorIndexGap_DoesNotThrow()
     {
         using var ctx = new Z3Context { DefaultCollectionHandling = CollectionHandling.Constants };
 
         // Values[0] and Values[2] are constrained; Values[1] is deliberately never referenced.
-        var theorem = ctx.NewTheorem<Triple>()
+        var solution = ctx.NewTheorem<Triple>()
             .Where(t => t.Values[0] == 1)
-            .Where(t => t.Values[2] == 3);
+            .Where(t => t.Values[2] == 3)
+            .Solve();
 
-        var solution = theorem.Solve();
-
-        Assert.NotNull(solution);
-        Assert.Equal(1, solution!.Values[0]);
-        Assert.Equal(3, solution.Values[2]);
-        Assert.Equal(0, solution.Values[1]); // unconstrained -> element-type default
+        solution.ShouldNotBeNull();
+        solution!.Values[0].ShouldBe(1);
+        solution.Values[2].ShouldBe(3);
+        solution.Values[1].ShouldBe(0);
     }
 
     /// <summary>
-    /// Boolean per-element constants in Constants mode: exercises MkBoolConst leaf creation and
-    /// IsTrue extraction. Flags[2] is left free, so it also covers the same value-type default-fill
-    /// path as the gap test above (bool[] previously threw InvalidCastException at extraction).
+    /// Three boolean flags, so the per-element path has to create boolean constants and read them
+    /// back, not just integer ones.
     /// </summary>
     public class BoolTriple
     {
+        /// <summary>
+        /// Gets or sets three flags.
+        /// </summary>
         public bool[] Flags { get; set; } = new bool[3];
     }
 
-    [Fact]
+    [TestMethod]
     public void ConstantsMode_BoolArray_SolvesWithPerElementConstants()
     {
         using var ctx = new Z3Context { DefaultCollectionHandling = CollectionHandling.Constants };
 
-        var theorem = ctx.NewTheorem<BoolTriple>()
+        var solution = ctx.NewTheorem<BoolTriple>()
             .Where(t => t.Flags[0])
-            .Where(t => !t.Flags[1]);
+            .Where(t => !t.Flags[1])
+            .Solve();
 
-        var solution = theorem.Solve();
-
-        Assert.NotNull(solution);
-        Assert.True(solution!.Flags[0]);
-        Assert.False(solution.Flags[1]);
-        Assert.False(solution.Flags[2]); // unconstrained -> default(bool) = false
+        solution.ShouldNotBeNull();
+        solution!.Flags[0].ShouldBeTrue();
+        solution.Flags[1].ShouldBeFalse();
+        solution.Flags[2].ShouldBeFalse();
     }
 }
