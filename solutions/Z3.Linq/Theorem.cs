@@ -10,6 +10,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Linq;
 using System.Linq.Expressions;
+using System.Numerics;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 
@@ -1051,9 +1052,9 @@ public class Theorem
             TypeCode.UInt64 => ((BitVecNum)expr).UInt64,
             TypeCode.DateTime => ToDateTime(((IntNum)expr).Int64, symbolName),
             TypeCode.Boolean => expr.IsTrue,
-            TypeCode.Single => float.Parse(((RatNum)expr).ToDecimalString(32), CultureInfo.InvariantCulture),
+            TypeCode.Single => (float)ReadRatNum((RatNum)expr),
             TypeCode.Decimal => ParseZ3Decimal(((RatNum)expr).ToDecimalString(128)),
-            TypeCode.Double => double.Parse(((RatNum)expr).ToDecimalString(64), CultureInfo.InvariantCulture),
+            TypeCode.Double => ReadRatNum((RatNum)expr),
             _ => throw new NotSupportedException(elementType is null
                 ? "Unsupported parameter type for " + symbolName + "."
                 : $"Unsupported array parameter type for {symbolName} and array element type {elementType.Name}."),
@@ -1079,6 +1080,70 @@ public class Theorem
 
         return decimal.Parse(span, NumberStyles.Number, CultureInfo.InvariantCulture);
     }
+
+    /// <summary>
+    /// Reads the exact rational Z3 holds for a real-valued symbol as the nearest
+    /// <see cref="double"/>.
+    /// </summary>
+    /// <param name="value">The model value of the symbol.</param>
+    /// <returns>The nearest <see cref="double"/> to the exact rational.</returns>
+    /// <remarks>
+    /// Reading the decimal rendering instead - <c>ToDecimalString(64)</c> - only works for values
+    /// that terminate within the digits requested. Z3 marks the ones that do not with a trailing
+    /// <c>?</c>, and a fixed number of digits cannot express a subnormal at all: at 32 places
+    /// <see cref="float.Epsilon"/> renders as <c>0.00000000000000000000000000000000?</c>. Parsing
+    /// the fraction keeps every value the CLR type can hold, including the exact fractions that
+    /// <see cref="Rational"/> lets a theorem state. See #52, #87 and the marshalling tests that
+    /// pinned the truncation.
+    /// </remarks>
+    private static double ReadRatNum(RatNum value)
+    {
+        BigInteger numerator = value.Numerator.BigInteger;
+        BigInteger denominator = value.Denominator.BigInteger;
+
+        if (numerator.IsZero)
+        {
+            return 0.0;
+        }
+
+        int sign = numerator.Sign;
+
+        // Each term is brought down to 64 bits and its discarded exponent kept aside, so the two
+        // casts stay in range whatever the magnitude of the fraction: a denominator of 2^1074 - the
+        // rational of double.Epsilon - overflows a double on its own, while the quotient it forms
+        // with a numerator of 1 does not.
+        double scaledNumerator = ScaleToDouble(BigInteger.Abs(numerator), out int numeratorExponent);
+        double scaledDenominator = ScaleToDouble(denominator, out int denominatorExponent);
+        double magnitude = Math.ScaleB(scaledNumerator / scaledDenominator, numeratorExponent - denominatorExponent);
+
+        return sign < 0 ? -magnitude : magnitude;
+    }
+
+    /// <summary>
+    /// Converts a positive integer to a <see cref="double"/> carrying at most its 64 leading bits.
+    /// </summary>
+    /// <param name="value">The positive integer.</param>
+    /// <param name="exponent">The power of two the value was divided by, before the cast.</param>
+    /// <returns>The converted value, equal to <paramref name="value"/> divided by 2^<paramref name="exponent"/>.</returns>
+    private static double ScaleToDouble(BigInteger value, out int exponent)
+    {
+        int bits = BitLength(value);
+        if (bits <= 64)
+        {
+            exponent = 0;
+            return (double)value;
+        }
+
+        exponent = bits - 64;
+        return (double)(value >> exponent);
+    }
+
+    /// <summary>
+    /// Counts the bits of a non-negative integer, so a magnitude can be scaled by powers of two.
+    /// </summary>
+    /// <param name="value">The integer.</param>
+    /// <returns>The number of bits needed to write it, i.e. 1 for 1 and 0 for 0.</returns>
+    private static int BitLength(BigInteger value) => (int)value.GetBitLength();
 
     /// <summary>
     /// Whether <paramref name="type"/> is one the library treats as a collection symbol: an

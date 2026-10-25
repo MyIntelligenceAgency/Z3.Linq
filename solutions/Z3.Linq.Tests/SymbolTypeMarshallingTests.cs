@@ -409,74 +409,84 @@ public class SymbolTypeMarshallingTests
     }
 
     /// <summary>
-    /// KNOWN DEFECT (#6): a value whose decimal expansion does not terminate cannot be read back.
+    /// A value whose decimal expansion does not terminate is read back exactly (#6).
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <c>RatNum.ToDecimalString</c> marks a truncated expansion by appending <c>?</c>, and
-    /// neither the <c>Single</c> nor the <c>Double</c> arm strips it before parsing - only the
-    /// <c>Decimal</c> arm does. A third solves perfectly well and then fails on the way out with
-    /// <c>The input string '0.33333333333333333333333333333333?' was not in a correct format</c>.
+    /// This used to be a defect. Real symbols were read through <c>RatNum.ToDecimalString</c>,
+    /// which marks a truncated expansion by appending <c>?</c>, and neither the <c>Single</c> nor
+    /// the <c>Double</c> arm stripped it before parsing: a third solved perfectly well and then
+    /// failed on the way out with <c>The input string '0.333...3?' was not in a correct format</c>.
     /// </para>
     /// <para>
-    /// This is not #54 and was not introduced by fixing it: the <c>double</c> case below fails
-    /// identically, at 64 decimal places rather than 32. Both are here so the defect is recorded
-    /// as shared rather than looking like a float problem.
-    /// These tests pin current behaviour and must be updated when the defect is fixed.
+    /// Reading the exact fraction instead - the numerator and denominator Z3 reduced it to -
+    /// makes the value available whatever its expansion, so the arm returns the nearest
+    /// <c>float</c> rather than throwing. Both arms are asserted here because the defect was
+    /// shared rather than a float problem.
     /// </para>
     /// </remarks>
     [TestMethod]
-    public void Solve_FloatSymbolWithANonTerminatingValue_ThrowsFormatException()
+    public void Solve_FloatSymbolWithANonTerminatingValue_ReadsBackTheNearestValue()
     {
-        // Arrange: a third has no finite decimal expansion, so the model value comes back
-        // truncated and flagged.
+        // Arrange: a third has no finite decimal expansion, which is the case the decimal
+        // rendering could not express.
         using var context = new Z3Context();
         var theorem = context.NewTheorem<Symbols<float, int>>()
             .Where(t => t.X1 * 3 == 1);
 
-        // Act & Assert
-        Should.Throw<FormatException>(() => theorem.Solve());
+        // Act
+        var result = theorem.Solve();
+
+        // Assert
+        result.ShouldNotBeNull();
+        result.X1.ShouldBe(1f / 3f);
     }
 
     /// <summary>
-    /// KNOWN DEFECT (#6). The <c>double</c> form, which behaves identically.
-    /// See <see cref="Solve_FloatSymbolWithANonTerminatingValue_ThrowsFormatException"/>.
+    /// The <c>double</c> form of a non-terminating value (#6).
+    /// See <see cref="Solve_FloatSymbolWithANonTerminatingValue_ReadsBackTheNearestValue"/>.
     /// </summary>
     [TestMethod]
-    public void Solve_DoubleSymbolWithANonTerminatingValue_ThrowsFormatException()
+    public void Solve_DoubleSymbolWithANonTerminatingValue_ReadsBackTheNearestValue()
     {
         // Arrange
         using var context = new Z3Context();
         var theorem = context.NewTheorem<Symbols<double, int>>()
             .Where(t => t.X1 * 3 == 1);
 
-        // Act & Assert
-        Should.Throw<FormatException>(() => theorem.Solve());
+        // Act
+        var result = theorem.Solve();
+
+        // Assert
+        result.ShouldNotBeNull();
+        result.X1.ShouldBe(1.0 / 3.0);
     }
 
     /// <summary>
-    /// KNOWN DEFECT (#6): the smallest positive <c>float</c> cannot be read back either, because
-    /// 32 decimal places cannot express it at all.
+    /// The smallest positive <c>float</c> is read back as itself (#6).
     /// </summary>
     /// <remarks>
-    /// The <c>Single</c> arm asks the model for 32 decimal places, which reads as a nod to
-    /// float's 32 bits but is a count of decimal digits after the point. <c>Single.Epsilon</c> is
-    /// about 1.4e-45, so every one of those 32 places is a zero and the value is reported as
-    /// <c>0.00000000000000000000000000000000?</c> - truncated to nothing. The <c>Double</c> arm
-    /// has the same shape at 64 places against a range reaching 5e-324, so this is a property of
-    /// the pair rather than of float.
-    /// This test pins current behaviour and must be updated when the defect is fixed.
+    /// The <c>Single</c> arm used to ask the model for 32 decimal places, which reads as a nod to
+    /// float's 32 bits but is a count of digits after the point. <c>Single.Epsilon</c> is about
+    /// 1.4e-45, so every one of those places was a zero and the value was reported as
+    /// <c>0.00000000000000000000000000000000?</c> - truncated to nothing. No fixed number of
+    /// decimal places can express every value a binary floating-point type holds; the exact
+    /// fraction can, so the value survives the round trip in full.
     /// </remarks>
     [TestMethod]
-    public void Solve_FloatSymbolAtItsSmallestPositiveValue_ThrowsFormatException()
+    public void Solve_FloatSymbolAtItsSmallestPositiveValue_ReadsBackTheSameValue()
     {
         // Arrange
         using var context = new Z3Context();
         var theorem = context.NewTheorem<Symbols<float, int>>()
             .Where(t => t.X1 == float.Epsilon);
 
-        // Act & Assert
-        Should.Throw<FormatException>(() => theorem.Solve());
+        // Act
+        var result = theorem.Solve();
+
+        // Assert
+        result.ShouldNotBeNull();
+        result.X1.ShouldBe(float.Epsilon);
     }
 
     /// <summary>
