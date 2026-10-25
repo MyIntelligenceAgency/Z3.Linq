@@ -793,6 +793,21 @@ internal sealed class ExpressionVisitor
 
             if (target != null)
             {
+                // A List<T>/IList<T> indexer reaches us as a get_Item call, not as an ArrayIndex
+                // node like an int[] one, so the Constants-mode per-element path has to be reached
+                // from here as well: the indexer otherwise falls through to MkSelect, which assumes
+                // an ArrayExpr that Constants mode never builds. In Array mode the member's
+                // environment is an ArrayExpr and not a MultipleEnvironment, so this guard fails
+                // and the Select path below runs as before. A nested collection element has no
+                // Expr of its own yet, so it falls through too and the Select picks the next level.
+                if (call.Arguments.Count == 1
+                    && target is MemberExpression collectionMember
+                    && this.ResolveBoundEnvironment(collectionMember) is MultipleEnvironment multiEnv
+                    && this.ResolveElementEnvironment(multiEnv, call.Arguments[0]) is { Expr: not null } elementEnv)
+                {
+                    return elementEnv.Expr!;
+                }
+
                 var args = call.Arguments;
                 var indexer = Expression.MakeIndex(target, propinfo, args);
 
