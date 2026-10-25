@@ -25,6 +25,19 @@ public class Theorem
     private readonly IEnumerable<LambdaExpression> constraints;
 
     /// <summary>
+    /// The soft (weighted MaxSAT) constraints, which a solve may leave violated at a cost.
+    /// </summary>
+    private readonly IEnumerable<SoftConstraint> softConstraints;
+
+    /// <summary>
+    /// A constraint the solve path may sacrifice, with the weight of that sacrifice.
+    /// </summary>
+    /// <param name="Constraint">The predicate, which is not required to hold.</param>
+    /// <param name="Weight">The penalty paid when it is left unsatisfied; strictly positive.</param>
+    /// <param name="Group">The MaxSAT objective the constraint belongs to.</param>
+    protected internal readonly record struct SoftConstraint(LambdaExpression Constraint, int Weight, string Group);
+
+    /// <summary>
     /// The instance passed to <c>NewTheorem</c>, if any, whose collections give theirs a length.
     /// </summary>
     private readonly object? template;
@@ -39,7 +52,7 @@ public class Theorem
     /// </summary>
     /// <param name="context">Z3 context.</param>
     protected Theorem(Z3Context context)
-        : this(context, [], null)
+        : this(context, [], null, [])
     {
     }
 
@@ -49,7 +62,7 @@ public class Theorem
     /// <param name="context">Z3 context.</param>
     /// <param name="constraints">Constraints to apply to the created theorem.</param>
     protected Theorem(Z3Context context, IEnumerable<LambdaExpression> constraints)
-        : this(context, constraints, null)
+        : this(context, constraints, null, [])
     {
     }
 
@@ -63,16 +76,38 @@ public class Theorem
     /// or <see langword="null"/>. See #78.
     /// </param>
     protected Theorem(Z3Context context, IEnumerable<LambdaExpression> constraints, object? template)
+        : this(context, constraints, template, [])
+    {
+    }
+
+    /// <summary>
+    /// Creates a new pre-constrained theorem for the given Z3 context, with a template instance and
+    /// soft constraints.
+    /// </summary>
+    /// <param name="context">Z3 context.</param>
+    /// <param name="constraints">Constraints to apply to the created theorem.</param>
+    /// <param name="template">
+    /// An instance of the environment type whose collections supply a length to the solution's,
+    /// or <see langword="null"/>. See #78.
+    /// </param>
+    /// <param name="softConstraints">Weighted soft constraints to apply to the created theorem.</param>
+    protected Theorem(Z3Context context, IEnumerable<LambdaExpression> constraints, object? template, IEnumerable<SoftConstraint> softConstraints)
     {
         this.context = context;
         this.constraints = constraints;
         this.template = template;
+        this.softConstraints = softConstraints;
     }
 
     /// <summary>
     /// Gets the constraints of the theorem.
     /// </summary>
     protected IEnumerable<LambdaExpression> Constraints => constraints;
+
+    /// <summary>
+    /// Gets the soft constraints of the theorem.
+    /// </summary>
+    protected IEnumerable<SoftConstraint> SoftConstraints => softConstraints;
 
     /// <summary>
     /// Gets the template instance the theorem was created from, if any.
@@ -137,12 +172,16 @@ public class Theorem
         using Context ctx = this.context.CreateContext();
         var environment = GetEnvironment(ctx, typeof(T));
 
-        // Solver solver = context.MkSimpleSolver();
-        Solver solver = ctx.MkSolver();
+        // A soft constraint needs an optimizer: AssertSoft defines an implicit objective - minimise
+        // the total weight left unsatisfied - that a solver has nowhere to put. A theorem without
+        // any soft constraint keeps the plain solver.
+        Z3Object approach = this.softConstraints.Any()
+            ? ctx.MkOptimize()
+            : ctx.MkSolver();
 
-        AssertConstraints<T>(ctx, solver, environment);
+        AssertConstraints<T>(ctx, approach, environment);
 
-        Status status = this.Check(ctx, solver, cancellationToken);
+        Status status = this.Check(ctx, approach, cancellationToken);
 
         if (status != Status.SATISFIABLE)
         {
@@ -150,7 +189,14 @@ public class Theorem
             return false;
         }
 
-        result = GetSolution<T>(ctx, solver.Model, environment, this.template);
+        Model model = approach switch
+        {
+            Solver solver => solver.Model,
+            Optimize optimizer => optimizer.Model,
+            _ => throw new ArgumentException("Expected a Solver or an Optimize.", nameof(approach)),
+        };
+
+        result = GetSolution<T>(ctx, model, environment, this.template);
         return true;
     }
 
@@ -420,6 +466,21 @@ public class Theorem
         }
 
         AssertBounds(context, approach, environment);
+
+        // Soft constraints: only an optimizer can carry them, each with its weight and group, so
+        // that Z3 minimises the total weight of the ones it leaves unsatisfied. The solve path
+        // routes through an optimizer whenever a soft constraint exists, which is the only way this
+        // branch is ever reached.
+        if (approach is Optimize softOptimizer)
+        {
+            foreach (var soft in this.softConstraints)
+            {
+                BoolExpr softExpression = (BoolExpr)ExpressionVisitor.Translate(context, environment, soft.Constraint.Body, soft.Constraint.Parameters[0]);
+
+                softOptimizer.AssertSoft(softExpression, (uint)soft.Weight, soft.Group);
+                this.context.LogWriteLine($"[soft w={soft.Weight} g={soft.Group}] {softExpression}");
+            }
+        }
     }
 
     /// <summary>

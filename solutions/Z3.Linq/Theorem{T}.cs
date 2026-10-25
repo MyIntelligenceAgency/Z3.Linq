@@ -46,6 +46,19 @@ public class Theorem<T> : Theorem, ISolveable<T>
     }
 
     /// <summary>
+    /// Creates a new pre-constrained theorem for the given Z3 context, from the constraints and
+    /// soft constraints of the theorem being extended.
+    /// </summary>
+    /// <param name="context">Z3 context.</param>
+    /// <param name="constraints">Constraints to apply to the created theorem.</param>
+    /// <param name="template">The template instance of the theorem being extended, or null.</param>
+    /// <param name="softConstraints">Weighted soft constraints to apply to the created theorem.</param>
+    internal Theorem(Z3Context context, IEnumerable<LambdaExpression> constraints, object? template, IEnumerable<SoftConstraint> softConstraints)
+        : base(context, constraints, template, softConstraints)
+    {
+    }
+
+    /// <summary>
     /// Solves the theorem.
     /// </summary>
     /// <param name="cancellationToken">A token that interrupts the solve.</param>
@@ -199,7 +212,51 @@ public class Theorem<T> : Theorem, ISolveable<T>
     /// <returns>Theorem with the new constraint applied.</returns>
     public Theorem<T> Where(Expression<Func<T, bool>> constraint)
     {
-        return new Theorem<T>(base.Context, base.Constraints.Concat([constraint]), base.Template)
+        return new Theorem<T>(base.Context, base.Constraints.Concat([constraint]), base.Template, base.SoftConstraints)
+        {
+            DefaultCollectionHandling = this.DefaultCollectionHandling,
+        };
+    }
+
+    /// <summary>
+    /// Adds a weighted soft constraint, which the solve path may leave unsatisfied at a cost.
+    /// </summary>
+    /// <param name="constraint">The soft constraint predicate.</param>
+    /// <param name="weight">The penalty paid when the constraint is left unsatisfied; strictly positive.</param>
+    /// <param name="group">
+    /// The MaxSAT objective the constraint belongs to. Constraints sharing a group are aggregated
+    /// into one objective by Z3, so the weights within a group trade off against each other.
+    /// </param>
+    /// <returns>Theorem with the new soft constraint applied.</returns>
+    /// <remarks>
+    /// <para>
+    /// Unlike <see cref="Where"/>, a soft constraint is not required to hold: when it cannot be
+    /// satisfied together with the hard constraints, Z3 leaves it violated and pays
+    /// <paramref name="weight"/>, minimising the total weight of what it leaves unsatisfied. A
+    /// heavier constraint is therefore honoured in preference to a lighter one, which is what makes
+    /// a weight a statement of priority rather than of importance.
+    /// </para>
+    /// <para>
+    /// A theorem carrying at least one soft constraint is checked through an optimizer, since an
+    /// implicit objective has nowhere to live on a plain solver.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <paramref name="weight"/> is zero or negative: a sacrifice that costs nothing cannot be
+    /// traded against one that does.
+    /// </exception>
+    public Theorem<T> SoftWhere(Expression<Func<T, bool>> constraint, int weight, string group = "default")
+    {
+        if (weight <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(weight), weight, "Soft-constraint weight must be strictly positive.");
+        }
+
+        return new Theorem<T>(
+            base.Context,
+            base.Constraints,
+            base.Template,
+            base.SoftConstraints.Concat([new SoftConstraint(constraint, weight, group)]))
         {
             DefaultCollectionHandling = this.DefaultCollectionHandling,
         };
