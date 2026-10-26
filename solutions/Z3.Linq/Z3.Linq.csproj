@@ -1,6 +1,17 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
+    <!-- Keep the published .deploy artifact loadable by the .NET 8/9 notebooks,
+         while the solution and its consumers continue to target .NET 10.
+         Clear the singular TFM inherited from Directory.Build.props so the SDK
+         performs an outer multi-targeting build instead of only building net10.0. -->
+    <TargetFramework></TargetFramework>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <!-- Both targets compile the same source. Without an explicit language version the
+         net8.0 outer build falls back to C# 12 and rejects the C# 14 `field` keyword
+         used by the context properties, so the net8 artifact would be a different
+         source than the net10 one. -->
+    <LangVersion>14.0</LangVersion>
     <Description>LINQ bindings for Z3, a satisfiability modulo theories solver from Microsoft Research. Based on a proof of concept from Bart De Smet.</Description>
     <PackageTags>Z3; LINQ; Solver; SMT; Bart De Smet</PackageTags>
   </PropertyGroup>
