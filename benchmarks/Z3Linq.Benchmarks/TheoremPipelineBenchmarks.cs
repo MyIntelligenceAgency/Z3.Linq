@@ -63,7 +63,7 @@ public class TheoremPipelineBenchmarks
                       where 0 <= t.X1 && t.X1 <= 6000
                       where t.X2 + t.X1 <= 11000
                       select t;
-        return theorem.Solve();
+        return theorem.Solve()!;
     }
 
     /// <summary>
@@ -82,6 +82,6 @@ public class TheoremPipelineBenchmarks
                       where t.X3 == t.X5
                       where t.X2 == 6 * t.X4
                       select t;
-        return theorem.Solve();
+        return theorem.Solve()!;
     }
 }

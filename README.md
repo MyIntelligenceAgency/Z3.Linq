@@ -197,6 +197,14 @@ Then you can copy any of the above samples.
 Add the `Z3.Linq` package.
 Configure your application to [target x64 platform](https://docs.microsoft.com/en-us/visualstudio/ide/how-to-configure-projects-to-target-platforms?view=vs-2022). This is a requirement as `Z3.Linq` uses the [Microsoft.Z3](https://www.nuget.org/packages/Microsoft.Z3/) package.
 
+## Benchmarks
+
+Le dépôt porte un banc [BenchmarkDotNet](https://benchmarkdotnet.org/) (`benchmarks/Z3Linq.Benchmarks`, projet intégré à `solutions/Z3.Linq.sln`) qui exerce l'API publique du provider LINQ-to-Z3 : pipeline complet de théorème (`Solve()` — contexte, réécriture d'arbre, AST Z3, solve, extraction du modèle) et constante `Rational`. La baseline mesurée et le protocole de reproduction vivent dans [`benchmarks/BASELINE-net8.0.md`](benchmarks/BASELINE-net8.0.md) — c'est le point de mesure de référence du dépôt pour les deltas runtime .NET 9/10/11 (CoursIA #18770).
+
+```bash
+dotnet run --project benchmarks/Z3Linq.Benchmarks -c Release
+```
+
 ## Contributing
 
 There are a number of ways in which you could contribute to this project:
