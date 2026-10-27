@@ -1,198 +1,192 @@
 namespace Z3.Linq.Tests;
 
-using System;
-
-using Xunit;
+#pragma warning disable CS1591
 
 /// <summary>
-/// Tests for configurable solver / logic selection on <see cref="Z3Context"/>
-/// (DSL backlog item B10, #4616).
-///
-/// Before B10, <see cref="Theorem"/> hard-coded <c>ctx.MkSolver()</c>, so neither the
-/// lightweight <c>MkSimpleSolver()</c> (which the original endjin code referenced in a
-/// commented-out line) nor a logic-specialized <c>MkSolver("QF_LIA")</c> could be chosen,
-/// and Z3 module parameters (timeout, random_seed, ...) could not be set. B10 adds
-/// <see cref="Z3Context.SolverKind"/>, <see cref="Z3Context.Logic"/> and
-/// <see cref="Z3Context.SetParameter(string, string)"/>, plumbed through
-/// <c>Z3Context.CreateSolver</c>.
+/// Choosing the solver a theorem is checked with: <see cref="Z3Context.SolverKind"/>,
+/// <see cref="Z3Context.Logic"/>, <see cref="Z3Context.Tactics"/> and
+/// <see cref="Z3Context.SetParameter(string, uint)"/>.
 /// </summary>
+/// <remarks>
+/// The solve path used to hard-code the combined solver, so neither the lightweight incremental one
+/// nor a logic-specialised one could be chosen, and Z3 solver parameters could not be set at all.
+/// Every case below asserts the same witness, so what varies is the path taken to it - a test that
+/// settled for "it returned something" would pass on a solver that had silently fallen back.
+/// </remarks>
+[TestClass]
 public class ConfigurableSolverTests
 {
-    public class LinearEnv
-    {
-        public int X { get; set; }
-
-        public int Y { get; set; }
-    }
-
-    private static Theorem<LinearEnv> LinearSystem(Z3Context ctx)
-    {
-        // Unique integer solution: X = 8, Y = 4.
-        return ctx.NewTheorem<LinearEnv>()
-            .Where(e => e.X + e.Y == 12)
-            .Where(e => e.X == 2 * e.Y);
-    }
-
-    [Fact]
-    public void DefaultSolverKind_PreservesBehavior()
+    [TestMethod]
+    public void DefaultSolverKind_PreservesBehaviour()
     {
         using var ctx = new Z3Context();
-        Assert.Equal(SolverKind.Default, ctx.SolverKind);
+        ctx.SolverKind.ShouldBe(SolverKind.Default);
 
         var result = LinearSystem(ctx).Solve();
 
-        Assert.NotNull(result);
-        Assert.Equal(8, result!.X);
-        Assert.Equal(4, result.Y);
+        result.ShouldNotBeNull();
+        result!.X.ShouldBe(8);
+        result.Y.ShouldBe(4);
     }
 
-    [Fact]
+    [TestMethod]
     public void SimpleSolverKind_SolvesSameSystem()
     {
         using var ctx = new Z3Context { SolverKind = SolverKind.Simple };
 
         var result = LinearSystem(ctx).Solve();
 
-        Assert.NotNull(result);
-        Assert.Equal(8, result!.X);
-        Assert.Equal(4, result.Y);
+        result.ShouldNotBeNull();
+        result!.X.ShouldBe(8);
+        result.Y.ShouldBe(4);
     }
 
-    [Fact]
+    [TestMethod]
     public void LogicSolverKind_QF_LIA_SolvesIntegerArithmetic()
     {
         using var ctx = new Z3Context { SolverKind = SolverKind.Logic, Logic = "QF_LIA" };
 
         var result = LinearSystem(ctx).Solve();
 
-        Assert.NotNull(result);
-        Assert.Equal(8, result!.X);
-        Assert.Equal(4, result.Y);
+        result.ShouldNotBeNull();
+        result!.X.ShouldBe(8);
+        result.Y.ShouldBe(4);
     }
 
-    [Fact]
+    [TestMethod]
     public void LogicSolverKind_WithoutLogic_Throws()
     {
+        // Z3's Context.MkSolver(string) treats an empty logic as "pick one yourself", so asking for
+        // the logic-specialised solver without naming a logic would silently build the general one.
         using var ctx = new Z3Context { SolverKind = SolverKind.Logic };
 
-        var ex = Assert.Throws<InvalidOperationException>(() => LinearSystem(ctx).Solve());
-        Assert.Contains("Logic", ex.Message);
+        var exception = Should.Throw<InvalidOperationException>(() => LinearSystem(ctx).Solve());
+
+        exception.Message.ShouldContain("Logic");
     }
 
-    [Fact]
+    [TestMethod]
     public void SetParameter_RandomSeed_IsPlumbedAndSolves()
     {
-        // A non-default random_seed must be accepted by the underlying Context and still solve.
+        // The parameter has to survive the trip to the solver: Z3 types its parameters, so a
+        // recognised name with the wrong type fails when the solver is configured, and reaching a
+        // model is the evidence this one landed as the unsigned integer random_seed expects.
         using var ctx = new Z3Context();
-        var returned = ctx.SetParameter("random_seed", "42");
+        Z3Context returned = ctx.SetParameter("random_seed", 42u);
 
-        Assert.Same(ctx, returned); // fluent chaining
+        returned.ShouldBeSameAs(ctx);
 
         var result = LinearSystem(ctx).Solve();
 
-        Assert.NotNull(result);
-        Assert.Equal(8, result!.X);
-        Assert.Equal(4, result.Y);
+        result.ShouldNotBeNull();
+        result!.X.ShouldBe(8);
+        result.Y.ShouldBe(4);
     }
 
-    [Fact]
+    [TestMethod]
     public void SetParameter_EmptyName_Throws()
     {
         using var ctx = new Z3Context();
-        Assert.Throws<ArgumentException>(() => ctx.SetParameter("", "1"));
+
+        Should.Throw<ArgumentException>(() => ctx.SetParameter(string.Empty, 1u));
     }
 
-    // --- Tactics (B10, tactics half of "configurable solver/tactics") ---
-    // SolverKind reached the solver half; Tactics reaches the tactics half. A non-empty
-    // Tactics sequence is composed via AndThen and takes precedence over SolverKind.
-
-    /// <summary>
-    /// A single-tactic pipeline ("smt") is unwrapped (AndThen needs two operands) and produces
-    /// a solver that solves the same linear system as the default combined solver.
-    /// </summary>
-    [Fact]
+    [TestMethod]
     public void Tactics_Single_SolvesSameSystem()
     {
-        using var ctx = new Z3Context { Tactics = new[] { "smt" } };
+        // A one-element sequence is returned as it is: Context.AndThen needs two operands.
+        using var ctx = new Z3Context { Tactics = ["smt"] };
 
         var result = LinearSystem(ctx).Solve();
 
-        Assert.NotNull(result);
-        Assert.Equal(8, result!.X);
-        Assert.Equal(4, result.Y);
+        result.ShouldNotBeNull();
+        result!.X.ShouldBe(8);
+        result.Y.ShouldBe(4);
     }
 
-    /// <summary>
-    /// A composed pipeline simplify -> solve-eqs -> smt (simplify, propagate equalities, then
-    /// decide) solves the linear system with the same witness as the default solver. This is
-    /// the canonical non-trivial tactic sequence for arithmetic.
-    /// </summary>
-    [Fact]
+    [TestMethod]
     public void Tactics_Sequence_SolvesSameSystem()
     {
-        using var ctx = new Z3Context { Tactics = new[] { "simplify", "solve-eqs", "smt" } };
+        // Simplify, propagate equalities, then decide: the canonical non-trivial arithmetic chain.
+        using var ctx = new Z3Context { Tactics = ["simplify", "solve-eqs", "smt"] };
 
         var result = LinearSystem(ctx).Solve();
 
-        Assert.NotNull(result);
-        Assert.Equal(8, result!.X);
-        Assert.Equal(4, result.Y);
+        result.ShouldNotBeNull();
+        result!.X.ShouldBe(8);
+        result.Y.ShouldBe(4);
     }
 
-    /// <summary>
-    /// Tactics take precedence over SolverKind: with both set, the tactic pipeline is used
-    /// (the combined tactic already ends in a decision procedure, so SolverKind is moot).
-    /// Correctness is unchanged — same witness.
-    /// </summary>
-    [Fact]
+    [TestMethod]
     public void Tactics_OverrideSolverKind()
     {
+        // Both are set: the tactic pipeline wins, and the result is unchanged. A sequence already
+        // ends in a decision procedure, so layering a solver kind on top would be a no-op.
         using var ctx = new Z3Context
         {
             SolverKind = SolverKind.Logic,
             Logic = "QF_LIA",
-            Tactics = new[] { "simplify", "smt" },
+            Tactics = ["simplify", "smt"],
         };
 
         var result = LinearSystem(ctx).Solve();
 
-        Assert.NotNull(result);
-        Assert.Equal(8, result!.X);
-        Assert.Equal(4, result.Y);
+        result.ShouldNotBeNull();
+        result!.X.ShouldBe(8);
+        result.Y.ShouldBe(4);
     }
 
-    /// <summary>
-    /// The bit-vector overflow predicate <c>a + b &lt; a</c> (modular wrap) is SAT over 4-bit
-    /// registers. Solving it through the dedicated bit-blasting pipeline
-    /// (simplify -> bit-blast -> sat) returns the SAME overflow witness as the default combined
-    /// solver — bit-blast reduces the bit-vector theory to propositional SAT, which is exactly
-    /// the specialized decision procedure this problem lives in. This is the Prong-B
-    /// discrimination instance: a tactic chosen because it matches the problem's theory, not
-    /// because it compiles (the degenerate case [sota-not-workaround] forbids).
-    /// </summary>
-    [Fact]
+    [TestMethod]
     public void Tactics_BitBlast_SolvesBitVectorOverflow()
     {
-        using var ctx = new Z3Context { Tactics = new[] { "simplify", "bit-blast", "sat" } };
+        // The overflow predicate a + b < a is satisfiable only because the addition wraps modulo
+        // 2^4 - over the unbounded integers it is simply false. Bit-blasting reduces the bit-vector
+        // theory to propositional SAT, which is the decision procedure this problem belongs to: the
+        // tactic is chosen because it matches the theory, not because any solver would do.
+        using var ctx = new Z3Context { Tactics = ["simplify", "bit-blast", "sat"] };
 
         var result = ctx.NewTheorem<Reg4BitVec>()
             .Where(r => r.B >= 1)
-            .Where(r => r.A + r.B < r.A) // wraps modulo 16
+            .Where(r => r.A + r.B < r.A)
             .Solve();
 
-        Assert.NotNull(result);
-        Assert.InRange(result!.A, 0, 15);
-        Assert.InRange(result.B, 1, 15);
-        Assert.True((result.A + result.B) % 16 < result.A, "the witnessed sum must wrap below A");
+        result.ShouldNotBeNull();
+        result!.A.ShouldBeInRange(0, 15);
+        result.B.ShouldBeInRange(1, 15);
+        ((result.A + result.B) % 16).ShouldBeLessThan(result.A);
     }
 
-    /// <summary>A pair of 4-bit unsigned registers for the bit-blast tactic test.</summary>
+    /// <summary>Two integers, with a unique integer solution of <c>X = 8</c>, <c>Y = 4</c>.</summary>
+    public class LinearEnv
+    {
+        /// <summary>Gets or sets the first variable.</summary>
+        public int X { get; set; }
+
+        /// <summary>Gets or sets the second variable.</summary>
+        public int Y { get; set; }
+    }
+
+    /// <summary>A pair of 4-bit unsigned registers, for the bit-blast tactic case.</summary>
     public class Reg4BitVec
     {
+        /// <summary>Gets or sets the first register.</summary>
         [BitVecWidth(4)]
         public int A { get; set; }
 
+        /// <summary>Gets or sets the second register.</summary>
         [BitVecWidth(4)]
         public int B { get; set; }
+    }
+
+    /// <summary>
+    /// The linear system every solver kind is asked to solve.
+    /// </summary>
+    /// <param name="ctx">The context whose configuration is under test.</param>
+    /// <returns>The theorem, before it is solved.</returns>
+    private static Theorem<LinearEnv> LinearSystem(Z3Context ctx)
+    {
+        return ctx.NewTheorem<LinearEnv>()
+            .Where(e => e.X + e.Y == 12)
+            .Where(e => e.X == 2 * e.Y);
     }
 }

@@ -1,9 +1,10 @@
-﻿namespace Z3.Linq;
+namespace Z3.Linq;
 
 using Microsoft.Z3;
 
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 
 /// <summary>
@@ -16,6 +17,30 @@ public sealed class Z3Context : IDisposable
     /// Z3 configuration object.
     /// </summary>
     private readonly Dictionary<string, string> config;
+
+    /// <summary>
+    /// The solver parameters set through <see cref="SetParameter(string, uint)"/>, applied to every
+    /// solver this context builds.
+    /// </summary>
+    private readonly Dictionary<string, SolverParameter> solverParameters = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// The type Z3 declares for a solver parameter, and therefore the type it must be given as.
+    /// </summary>
+    private enum ParameterKind
+    {
+        /// <summary>A symbol, the form Z3's own parameter output uses.</summary>
+        Symbol,
+
+        /// <summary>An unsigned integer.</summary>
+        Unsigned,
+
+        /// <summary>A Boolean.</summary>
+        Boolean,
+
+        /// <summary>A real.</summary>
+        Real,
+    }
 
     /// <summary>
     /// Creates a new Z3 context for theorem proving.
@@ -34,74 +59,192 @@ public sealed class Z3Context : IDisposable
     public TextWriter? Log { get; set; }
 
     /// <summary>
-    /// Selects which Z3 solver is created when a theorem is solved by this context.
-    /// Default is <see cref="SolverKind.Default"/> (Z3's general-purpose combined solver,
-    /// <c>ctx.MkSolver()</c>), which preserves existing behavior.
+    /// Gets or sets how long a single solve or optimisation may run before Z3 gives up, or
+    /// <see langword="null"/> for no limit.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Some theorems cannot be decided - nonlinear integer arithmetic is undecidable in general -
+    /// and without a limit Z3 searches until the process is killed. When the limit is reached the
+    /// solve throws <see cref="TheoremUndecidedException"/>: the theorem has been proved neither
+    /// satisfiable nor unsatisfiable. A theorem Z3 can decide within the limit is unaffected.
+    /// See #85.
+    /// </para>
+    /// <para>
+    /// Wall-clock time, so the same theorem may or may not hit the limit on a different machine.
+    /// <see cref="ResourceLimit"/> is the deterministic alternative.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// The value is not positive, or exceeds what Z3 can represent in milliseconds.
+    /// </exception>
+    public TimeSpan? Timeout
+    {
+        get => field;
+        set
+        {
+            if (value is { } t && (t <= TimeSpan.Zero || t.TotalMilliseconds > uint.MaxValue))
+            {
+                throw new ArgumentOutOfRangeException(nameof(value), value, "The timeout must be positive and no more than uint.MaxValue milliseconds.");
+            }
+
+            field = value;
+        }
+    }
+
+    /// <summary>
+    /// Gets or sets how much work Z3 may do on a single solve or optimisation before giving up,
+    /// in Z3's own resource units, or <see langword="null"/> for no limit.
+    /// </summary>
+    /// <remarks>
+    /// The deterministic sibling of <see cref="Timeout"/>: the same theorem does the same amount
+    /// of work everywhere, so a limit that is reached on one machine is reached on all of them.
+    /// The unit is Z3's <c>rlimit</c>, which has no fixed relationship to time. When the limit is
+    /// reached the solve throws <see cref="TheoremUndecidedException"/>. See #85.
+    /// </remarks>
+    /// <exception cref="ArgumentOutOfRangeException">The value is zero.</exception>
+    public uint? ResourceLimit
+    {
+        get => field;
+        set
+        {
+            if (value is 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(value), value, "The resource limit must be positive.");
+            }
+
+            field = value;
+        }
+    }
+
+    /// <summary>
+    /// Gets or sets how collection symbols are modelled in Z3 for the theorems this context
+    /// creates.
+    /// </summary>
+    /// <remarks>
+    /// Propagated to every <see cref="Theorem{T}"/> built here, and re-propagated by its
+    /// <c>Where</c>. The default, <see cref="CollectionHandling.Array"/>, keeps the behaviour a
+    /// nested array has always had; <see cref="CollectionHandling.Constants"/> is the mode that
+    /// names each element.
+    /// </remarks>
+    public CollectionHandling DefaultCollectionHandling { get; set; } = CollectionHandling.Array;
+
+    /// <summary>
+    /// Gets or sets which Z3 solver the theorems of this context are checked with.
+    /// </summary>
+    /// <remarks>
+    /// Overridden by <see cref="Tactics"/> when that is non-empty, and ignored by the two paths
+    /// that need an object other than a solver: the optimizer a soft constraint needs, and the
+    /// diagnostic path, which needs the hypothesis tracking a combined solver provides.
+    /// </remarks>
     public SolverKind SolverKind { get; set; } = SolverKind.Default;
 
     /// <summary>
-    /// The SMT-LIB logic name (e.g. <c>"QF_LIA"</c>, <c>"QF_BV"</c>, <c>"LIA"</c>) used when
-    /// <see cref="SolverKind"/> is <see cref="SolverKind.Logic"/>. A logic-specialized solver
-    /// can be markedly faster on a restricted fragment, at the cost of rejecting constraints
-    /// outside that fragment. Ignored for the other solver kinds.
+    /// Gets or sets the SMT-LIB logic name (<c>"QF_LIA"</c>, <c>"QF_BV"</c>, ...) used when
+    /// <see cref="SolverKind"/> is <see cref="SolverKind.Logic"/>.
     /// </summary>
+    /// <remarks>Ignored for every other solver kind.</remarks>
     public string? Logic { get; set; }
 
     /// <summary>
-    /// Optional ordered list of Z3 tactic names (e.g. <c>"simplify"</c>, <c>"solve-eqs"</c>,
-    /// <c>"smt"</c>, <c>"bit-blast"</c>, <c>"sat"</c>, <c>"qfbv"</c>) composed left-to-right with
-    /// <c>AndThen</c> to build the solver. When non-empty, this takes precedence over
-    /// <see cref="SolverKind"/>: the composed tactic's solver is used instead of a plain
-    /// <c>MkSolver</c>/<c>MkSimpleSolver</c>/<c>MkSolver(logic)</c>.
-    ///
-    /// Tactics expose Z3's proof-search pipeline (simplification, equality propagation,
-    /// bit-blasting to SAT, ...) to the DSL — a tactic sequence lets the caller drive the
-    /// strategy that a plain solver picks heuristically. Available names are enumerable via
-    /// <c>Context.NumTactics</c>/<c>Context.TacticNames</c>; unknown names throw
-    /// <see cref="Microsoft.Z3.Z3Exception"/> at solve time.
+    /// Gets or sets an ordered list of Z3 tactic names composed left to right, whose solver is used
+    /// instead of the one <see cref="SolverKind"/> selects.
     /// </summary>
     /// <remarks>
-    /// DSL backlog item B10 (#4616): <see cref="SolverKind"/> reached the solver half of
-    /// "configurable solver/tactics"; this property reaches the tactics half. The two compose:
-    /// a non-empty <see cref="Tactics"/> overrides <see cref="SolverKind"/> because a tactic
-    /// already subsumes solver selection (a tactic ends in a SAT/SMT decision procedure).
+    /// <para>
+    /// A tactic sequence already ends in a decision procedure, so it takes precedence over
+    /// <see cref="SolverKind"/>: layering the two would be a no-op at best. Names are Z3's own -
+    /// <c>"simplify"</c>, <c>"solve-eqs"</c>, <c>"smt"</c>, <c>"bit-blast"</c>, <c>"sat"</c>,
+    /// <c>"qfbv"</c> - and an unknown one throws
+    /// <see cref="Microsoft.Z3.Z3Exception"/> from Z3 when the solver is built. The available names
+    /// are what <c>Context.TacticNames</c> enumerates.
+    /// </para>
+    /// <para>
+    /// This is the surface that lets a caller drive the strategy a plain solver picks
+    /// heuristically: simplification, equality propagation, bit-blasting to SAT.
+    /// </para>
     /// </remarks>
     /// <example>
-    /// Bit-vector problem solved through the dedicated bit-blasting pipeline:
     /// <code>
-    /// using var ctx = new Z3Context { Tactics = new[] { "simplify", "bit-blast", "sat" } };
+    /// using var ctx = new Z3Context { Tactics = ["simplify", "bit-blast", "sat"] };
     /// </code>
     /// </example>
     public IReadOnlyList<string>? Tactics { get; set; }
 
     /// <summary>
-    /// Sets a Z3 module/global parameter (e.g. <c>"timeout"</c>, <c>"random_seed"</c>,
-    /// <c>"unsat_core"</c>) applied when the underlying <see cref="Context"/> is created.
-    /// Returns this context to allow fluent chaining.
+    /// Sets a Z3 <em>solver</em> parameter, such as <c>random_seed</c> or <c>phase_selection</c>, to
+    /// be applied to every solver this context builds.
     /// </summary>
-    /// <param name="name">Parameter name.</param>
-    /// <param name="value">Parameter value (Z3 parses booleans/integers from their string form).</param>
-    /// <returns>This context.</returns>
-    public Z3Context SetParameter(string name, string value)
+    /// <param name="name">The Z3 parameter name.</param>
+    /// <param name="value">Its value, as the type Z3 declares for that parameter.</param>
+    /// <returns>The same context, so calls can be chained.</returns>
+    /// <remarks>
+    /// <para>
+    /// These are the parameters of Z3's solver, applied per check like <see cref="Timeout"/> and
+    /// <see cref="ResourceLimit"/>, so changing one affects the next solve rather than a context
+    /// already in use. That is deliberately not the <em>global</em> configuration: Z3's global
+    /// parameters are a different, much smaller set, and a name such as <c>random_seed</c> is
+    /// rejected there with a printed warning rather than applied.
+    /// </para>
+    /// <para>
+    /// The value is typed because Z3 types its parameters: <c>random_seed</c> takes an unsigned
+    /// integer, and handing it a symbol fails when the solver is configured. The four overloads
+    /// cover the four types Z3 accepts, so the caller states the type rather than having this
+    /// library guess one from the text.
+    /// </para>
+    /// <para>
+    /// An unknown name is Z3's to reject, when the solver is checked, rather than silently ignored
+    /// here: the set of parameters is Z3's, and enumerating it in this library would go stale.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentException"><paramref name="name"/> is empty or white space.</exception>
+    /// <example>
+    /// <code>
+    /// using var ctx = new Z3Context().SetParameter("random_seed", 42u);
+    /// </code>
+    /// </example>
+    public Z3Context SetParameter(string name, uint value)
     {
-        if (string.IsNullOrEmpty(name))
-        {
-            throw new ArgumentException("Parameter name must be non-empty.", nameof(name));
-        }
-
-        this.config[name] = value ?? throw new ArgumentNullException(nameof(value));
-        return this;
+        return this.SetParameter(name, ParameterKind.Unsigned, value.ToString(CultureInfo.InvariantCulture));
     }
 
     /// <summary>
-    /// Gets/sets how collection (array/IEnumerable) properties are modeled in Z3 for theorems created
-    /// by this context. Propagated to each <see cref="Theorem{T}"/> built via <see cref="NewTheorem{T}()"/>.
-    /// Default is <see cref="CollectionHandling.Array"/> to preserve existing behavior (incl. nested int[][]
-    /// support); set to <see cref="CollectionHandling.Constants"/> to model collections as one Z3 constant
-    /// per element (the classic endjin binding model, resurrected).
+    /// Sets a Z3 solver parameter that takes a Boolean. See
+    /// <see cref="SetParameter(string, uint)"/>.
     /// </summary>
-    public CollectionHandling DefaultCollectionHandling { get; set; } = CollectionHandling.Array;
+    /// <param name="name">The Z3 parameter name.</param>
+    /// <param name="value">Its value.</param>
+    /// <returns>The same context, so calls can be chained.</returns>
+    /// <exception cref="ArgumentException"><paramref name="name"/> is empty or white space.</exception>
+    public Z3Context SetParameter(string name, bool value)
+    {
+        return this.SetParameter(name, ParameterKind.Boolean, value.ToString());
+    }
+
+    /// <summary>
+    /// Sets a Z3 solver parameter that takes a real. See <see cref="SetParameter(string, uint)"/>.
+    /// </summary>
+    /// <param name="name">The Z3 parameter name.</param>
+    /// <param name="value">Its value.</param>
+    /// <returns>The same context, so calls can be chained.</returns>
+    /// <exception cref="ArgumentException"><paramref name="name"/> is empty or white space.</exception>
+    public Z3Context SetParameter(string name, double value)
+    {
+        return this.SetParameter(name, ParameterKind.Real, value.ToString("R", CultureInfo.InvariantCulture));
+    }
+
+    /// <summary>
+    /// Sets a Z3 solver parameter that takes a symbol - the form Z3's own output uses, such as
+    /// <c>restart_strategy=luby</c>. See <see cref="SetParameter(string, uint)"/>.
+    /// </summary>
+    /// <param name="name">The Z3 parameter name.</param>
+    /// <param name="value">Its value, as a symbol name.</param>
+    /// <returns>The same context, so calls can be chained.</returns>
+    /// <exception cref="ArgumentException"><paramref name="name"/> is empty or white space.</exception>
+    public Z3Context SetParameter(string name, string value)
+    {
+        return this.SetParameter(name, ParameterKind.Symbol, value);
+    }
 
     /// <summary>
     /// Closes the native resources held by the Z3 theorem prover.
@@ -122,23 +265,39 @@ public sealed class Z3Context : IDisposable
     }
 
     /// <summary>
-    /// Creates a new theorem based on a skeleton object used to infer the environment
-    /// type with the variables constrained by the theorem.
-    ///
-    /// This overload is useful if one wants to use an anonymous type "on the fly" to
-    /// create a new theorem based on the type's properties as variables.
+    /// Creates a new theorem from a template instance, which supplies the environment type and
+    /// the length of any collection symbols in it.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The type is inferred from the instance, which is what lets an anonymous type be used as
+    /// an environment "on the fly". The instance is also the template for the solution: a
+    /// collection symbol takes its length from the corresponding collection on the template,
+    /// because a solution never changes a collection's length and has to get it from somewhere.
+    /// That is what lets a value tuple or an anonymous type - neither of which has anywhere to
+    /// put an initialiser - hold a collection at all. Where the type has an initialiser of its
+    /// own the template still wins. See #78.
+    /// </para>
+    /// <para>
+    /// Nothing else about the template is read. Its values do not constrain the theorem and do
+    /// not reach the solution, and it is never written to.
+    /// </para>
+    /// </remarks>
     /// <example>
     /// <code>
     /// ctx.NewTheorem(new { x = default(int), y = default(int) }).Where(t => t.x > t.y)
+    /// ctx.NewTheorem((Values: new int[3], Total: 0)).Where(t => t.Values[0] + t.Values[1] + t.Values[2] == t.Total)
     /// </code>
     /// </example>
     /// <typeparam name="T">Theorem environment type (typically inferred).</typeparam>
-    /// <param name="dummy">Dummy parameter, typically an anonymous type instance.</param>
+    /// <param name="template">
+    /// An instance of the environment type. Its collections give the solution's their length;
+    /// nothing else about it is used.
+    /// </param>
     /// <returns>New theorem object based on the given environment.</returns>
-    public Theorem<T> NewTheorem<T>(T dummy)
+    public Theorem<T> NewTheorem<T>(T template)
     {
-        return new Theorem<T>(this) { DefaultCollectionHandling = this.DefaultCollectionHandling };
+        return new Theorem<T>(this, template) { DefaultCollectionHandling = this.DefaultCollectionHandling };
     }
 
     /// <summary>
@@ -151,58 +310,107 @@ public sealed class Z3Context : IDisposable
     }
 
     /// <summary>
-    /// Creates the Z3 solver for a theorem according to <see cref="Tactics"/> (when set) or
-    /// <see cref="SolverKind"/> and <see cref="Logic"/>. Centralizes the solver-factory choice
-    /// that was previously hard-coded to <c>ctx.MkSolver()</c> in <see cref="Theorem"/>. (DSL
-    /// backlog B10, #4616: solver half via <see cref="SolverKind"/>, tactics half via
-    /// <see cref="Tactics"/>.)
+    /// Records a solver parameter, after checking the name the four overloads share.
     /// </summary>
-    /// <param name="context">The native Z3 context the solver is created under.</param>
-    /// <returns>The configured solver. A tactic-composed solver when <see cref="Tactics"/> is
-    /// non-empty; otherwise the <see cref="SolverKind"/>-selected solver.</returns>
+    /// <param name="name">The Z3 parameter name.</param>
+    /// <param name="kind">The type Z3 declares for the parameter.</param>
+    /// <param name="value">Its value, in the textual form the kind is parsed from.</param>
+    /// <returns>The same context, so calls can be chained.</returns>
+    /// <exception cref="ArgumentException"><paramref name="name"/> is empty or white space.</exception>
+    private Z3Context SetParameter(string name, ParameterKind kind, string value)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            throw new ArgumentException("A parameter name is required.", nameof(name));
+        }
+
+        this.solverParameters[name] = new SolverParameter(kind, value);
+        return this;
+    }
+
+    /// <summary>
+    /// The solver parameters carrying <see cref="Timeout"/>, <see cref="ResourceLimit"/> and
+    /// whatever <see cref="SetParameter(string, uint)"/> was given, or <see langword="null"/> when
+    /// none is set.
+    /// </summary>
+    /// <param name="context">The native context the parameters are created in.</param>
+    /// <remarks>
+    /// Applied per solver rather than through the context configuration, so that a parameter is a
+    /// property of the <see cref="Z3Context"/> that can be changed between solves.
+    /// </remarks>
+    internal Params? CreateSolverParameters(Context context)
+    {
+        if (this.Timeout is null && this.ResourceLimit is null && this.solverParameters.Count == 0)
+        {
+            return null;
+        }
+
+        Params parameters = context.MkParams();
+
+        foreach (KeyValuePair<string, SolverParameter> parameter in this.solverParameters)
+        {
+            parameter.Value.Apply(parameters, parameter.Key);
+        }
+
+        if (this.Timeout is { } t)
+        {
+            // Round up, not truncate: Z3's timeout is in whole milliseconds, and a positive
+            // TimeSpan below one millisecond truncates to 0, which Z3 reads as "no timeout" - so
+            // a caller who asked for a tiny timeout would silently get none. Ceiling keeps any
+            // positive timeout at least one millisecond, and stays within uint (the setter bounds
+            // the value at uint.MaxValue milliseconds).
+            parameters.Add("timeout", (uint)Math.Ceiling(t.TotalMilliseconds));
+        }
+
+        if (this.ResourceLimit is { } r)
+        {
+            parameters.Add("rlimit", r);
+        }
+
+        return parameters;
+    }
+
+    /// <summary>
+    /// Builds the solver a theorem of this context is checked with, from
+    /// <see cref="Tactics"/> when that is set, and from <see cref="SolverKind"/> and
+    /// <see cref="Logic"/> otherwise.
+    /// </summary>
+    /// <param name="context">The native context the solver is built in.</param>
+    /// <returns>The configured solver.</returns>
+    /// <exception cref="InvalidOperationException">
+    /// <see cref="SolverKind"/> is <see cref="SolverKind.Logic"/> and <see cref="Logic"/> is not
+    /// set - Z3 would otherwise silently build the general-purpose solver instead.
+    /// </exception>
     internal Solver CreateSolver(Context context)
     {
-        // Tactics take precedence over SolverKind: a tactic sequence already ends in a
-        // decision procedure, so layering SolverKind on top would be a no-op or a contradiction.
-        if (Tactics is { Count: > 0 })
+        if (this.Tactics is { Count: > 0 })
         {
             return context.MkSolver(ComposeTactics(context));
         }
 
-        switch (SolverKind)
+        return this.SolverKind switch
         {
-            case SolverKind.Simple:
-                return context.MkSimpleSolver();
-
-            case SolverKind.Logic:
-                if (string.IsNullOrEmpty(Logic))
-                {
-                    throw new InvalidOperationException(
-                        $"{nameof(SolverKind)}.{nameof(SolverKind.Logic)} requires {nameof(Logic)} " +
-                        "to be set to an SMT-LIB logic name (e.g. \"QF_LIA\").");
-                }
-
-                return context.MkSolver(Logic);
-
-            case SolverKind.Default:
-            default:
-                return context.MkSolver();
-        }
+            SolverKind.Simple => context.MkSimpleSolver(),
+            SolverKind.Logic when string.IsNullOrEmpty(this.Logic) => throw new InvalidOperationException(
+                $"{nameof(SolverKind)}.{nameof(SolverKind.Logic)} requires {nameof(Logic)} to be set to an "
+                + "SMT-LIB logic name, e.g. \"QF_LIA\"."),
+            SolverKind.Logic => context.MkSolver(this.Logic!),
+            _ => context.MkSolver(),
+        };
     }
 
     /// <summary>
-    /// Composes the <see cref="Tactics"/> sequence into a single Z3 tactic via
-    /// <c>AndThen</c> (left-to-right sequencing). <c>AndThen(t1, t2, ...)</c> requires at least
-    /// two tactics, so a single-element sequence is returned unwrapped.
+    /// Composes <see cref="Tactics"/> into a single tactic, left to right.
     /// </summary>
-    /// <param name="context">The native Z3 context used to build each tactic.</param>
+    /// <param name="context">The native context each tactic is built in.</param>
     /// <returns>The composed tactic.</returns>
-    /// <exception cref="Microsoft.Z3.Z3Exception">Thrown by Z3 if any name is not a known
-    /// tactic (the exception carries the offending name; available names are enumerable via
-    /// <c>Context.TacticNames</c>).</exception>
+    /// <remarks>
+    /// <c>AndThen</c> needs at least two tactics, so a one-element sequence is returned as it is
+    /// rather than wrapped in a composite of one.
+    /// </remarks>
     private Tactic ComposeTactics(Context context)
     {
-        var names = Tactics!;
+        var names = this.Tactics!;
         if (names.Count == 1)
         {
             return context.MkTactic(names[0]);
@@ -218,9 +426,38 @@ public sealed class Z3Context : IDisposable
     /// <param name="s">Log output string.</param>
     internal void LogWriteLine(string s)
     {
-        if (Log != null)
+        Log?.WriteLine(s);
+    }
+
+    /// <summary>
+    /// A solver parameter, held as the value Z3 is given along with the type it is given as.
+    /// </summary>
+    /// <param name="Kind">The type Z3 declares for the parameter.</param>
+    /// <param name="Value">Its value, in the textual form the kind is parsed from.</param>
+    private readonly record struct SolverParameter(ParameterKind Kind, string Value)
+    {
+        /// <summary>
+        /// Adds the parameter to the set handed to a solver.
+        /// </summary>
+        /// <param name="parameters">The set being built for the next check.</param>
+        /// <param name="name">The parameter's name.</param>
+        internal void Apply(Params parameters, string name)
         {
-            Log.WriteLine(s);
+            switch (this.Kind)
+            {
+                case ParameterKind.Unsigned:
+                    parameters.Add(name, uint.Parse(this.Value, CultureInfo.InvariantCulture));
+                    break;
+                case ParameterKind.Boolean:
+                    parameters.Add(name, bool.Parse(this.Value));
+                    break;
+                case ParameterKind.Real:
+                    parameters.Add(name, double.Parse(this.Value, CultureInfo.InvariantCulture));
+                    break;
+                default:
+                    parameters.Add(name, this.Value);
+                    break;
+            }
         }
     }
 }

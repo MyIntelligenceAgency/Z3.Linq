@@ -1,150 +1,189 @@
 namespace Z3.Linq.Tests;
 
-using Xunit;
+#pragma warning disable CS1591
 
 /// <summary>
-/// Regression tests for the weighted Pseudo-Boolean magic methods
-/// (<see cref="Z3Methods.WeightedAtLeast"/>, <see cref="Z3Methods.WeightedAtMost"/>,
-/// <see cref="Z3Methods.WeightedExactly"/>) -- the band forms of issue #10605
-/// (weights != 1, e.g. nutrition bounds over recipe indicators in notebook 09).
-/// They map to native Z3 <c>MkPBGe</c> / <c>MkPBLe</c> / <c>MkPBEq</c> instead of an
-/// <c>MkIte + MkAdd</c> expansion (pb-bench c.8252 measures the gap).
+/// The weighted pseudo-Boolean magic methods: <see cref="Z3Methods.WeightedAtLeast"/>,
+/// <see cref="Z3Methods.WeightedAtMost"/> and <see cref="Z3Methods.WeightedExactly"/>.
 /// </summary>
+/// <remarks>
+/// The unweighted trio covers equal contributions; these cover a group whose options carry unequal
+/// contributions, stated as a lower bound, an upper bound, or an exact value over the weighted sum.
+/// They map onto native <c>MkPBGe</c> / <c>MkPBLe</c> / <c>MkPBEq</c>, so Z3's pseudo-Boolean
+/// propagation applies instead of an <c>Ite</c>-and-add expansion.
+/// </remarks>
+[TestClass]
 public class WeightedPbTests
 {
+    /// <summary>Five flags, the group the bands are stated over.</summary>
     public class BoolQuintuple
     {
+        /// <summary>Gets or sets the five flags.</summary>
         public bool[] B { get; set; } = new bool[5];
     }
 
-    // weights {3, 1, 4, 1, 5} -- sums of forced patterns:
-    //   B0 alone = 3 ; B0+B2 = 7 ; B4 alone = 5 ; B0+B1+B3 = 5 ; all = 14.
-    private static readonly int[] W = new int[] { 3, 1, 4, 1, 5 };
+    // Weights {3, 1, 4, 1, 5}: the sums of the forced patterns below are 1, 3, 5, 7 and 14, so a
+    // bound can be placed on either side of a reachable value rather than only in open space.
+    private static readonly int[] W = [3, 1, 4, 1, 5];
 
-    [Fact]
+    [TestMethod]
     public void WeightedAtLeast_AcceptsSatisfiableBand()
     {
         using var ctx = new Z3Context();
-        var theorem = ctx.NewTheorem<BoolQuintuple>()
-            .Where(t => Z3Methods.WeightedAtLeast(7, W, t.B[0], t.B[1], t.B[2], t.B[3], t.B[4]))
-            .Where(t => t.B[0] && t.B[2]);   // weighted sum = 7 exactly
 
-        var result = theorem.Solve();
-        Assert.NotNull(result);
-        Assert.True(result!.B[0] && result.B[2]);
+        var solution = ctx.NewTheorem<BoolQuintuple>()
+            .Where(t => Z3Methods.WeightedAtLeast(7, W, t.B[0], t.B[1], t.B[2], t.B[3], t.B[4]))
+
+            // B0 + B2 weighs exactly 7, so the bound is met at equality.
+            .Where(t => t.B[0] && t.B[2])
+            .Solve();
+
+        solution.ShouldNotBeNull();
+        solution!.B[0].ShouldBeTrue();
+        solution.B[2].ShouldBeTrue();
     }
 
-    [Fact]
+    [TestMethod]
     public void WeightedAtLeast_RejectsInsufficientSum()
     {
         using var ctx = new Z3Context();
-        var theorem = ctx.NewTheorem<BoolQuintuple>()
-            .Where(t => Z3Methods.WeightedAtLeast(7, W, t.B[0], t.B[1], t.B[2], t.B[3], t.B[4]))
-            .Where(t => t.B[1] && !t.B[0] && !t.B[2] && !t.B[3] && !t.B[4]);   // only B1 on: sum = 1 < 7
 
-        var result = theorem.Solve();
-        Assert.Null(result);
+        var solution = ctx.NewTheorem<BoolQuintuple>()
+            .Where(t => Z3Methods.WeightedAtLeast(7, W, t.B[0], t.B[1], t.B[2], t.B[3], t.B[4]))
+
+            // Only B1 is on, and it weighs 1, well under the bound.
+            .Where(t => t.B[1] && !t.B[0] && !t.B[2] && !t.B[3] && !t.B[4])
+            .Solve();
+
+        solution.ShouldBeNull();
     }
 
-    [Fact]
+    [TestMethod]
     public void WeightedAtMost_AcceptsExactBound()
     {
         using var ctx = new Z3Context();
-        var theorem = ctx.NewTheorem<BoolQuintuple>()
-            .Where(t => Z3Methods.WeightedAtMost(7, W, t.B[0], t.B[1], t.B[2], t.B[3], t.B[4]))
-            .Where(t => t.B[0] && t.B[2]);   // weighted sum = 7 <= 7
 
-        var result = theorem.Solve();
-        Assert.NotNull(result);
+        var solution = ctx.NewTheorem<BoolQuintuple>()
+            .Where(t => Z3Methods.WeightedAtMost(7, W, t.B[0], t.B[1], t.B[2], t.B[3], t.B[4]))
+            .Where(t => t.B[0] && t.B[2])
+            .Solve();
+
+        solution.ShouldNotBeNull();
     }
 
-    [Fact]
+    [TestMethod]
     public void WeightedAtMost_RejectsOverflowingSum()
     {
         using var ctx = new Z3Context();
-        var theorem = ctx.NewTheorem<BoolQuintuple>()
-            .Where(t => Z3Methods.WeightedAtMost(6, W, t.B[0], t.B[1], t.B[2], t.B[3], t.B[4]))
-            .Where(t => t.B[0] && t.B[2]);   // weighted sum = 7 > 6
 
-        var result = theorem.Solve();
-        Assert.Null(result);
+        var solution = ctx.NewTheorem<BoolQuintuple>()
+            .Where(t => Z3Methods.WeightedAtMost(6, W, t.B[0], t.B[1], t.B[2], t.B[3], t.B[4]))
+
+            // B0 + B2 weighs 7, one over the bound: the pair only fails together, which is what
+            // tells the constraint apart from one that would reject B2 alone.
+            .Where(t => t.B[0] && t.B[2])
+            .Solve();
+
+        solution.ShouldBeNull();
     }
 
-    [Fact]
+    [TestMethod]
     public void WeightedExactly_PinsTheSum()
     {
         using var ctx = new Z3Context();
-        // B0 + B1 + B3 = 3 + 1 + 1 = 5, and B4 alone = 5 too: two satisfying patterns.
-        var theorem = ctx.NewTheorem<BoolQuintuple>()
-            .Where(t => Z3Methods.WeightedExactly(5, W, t.B[0], t.B[1], t.B[2], t.B[3], t.B[4]));
 
-        var result = theorem.Solve();
-        Assert.NotNull(result);
-        int sum = 0;
-        for (int i = 0; i < 5; i++)
-        {
-            if (result!.B[i]) sum += W[i];
-        }
-        Assert.Equal(5, sum);
-
-        // Off-by-one on the bound is unsat against the forced maximal pattern below.
-        var unsat = ctx.NewTheorem<BoolQuintuple>()
+        var solution = ctx.NewTheorem<BoolQuintuple>()
             .Where(t => Z3Methods.WeightedExactly(5, W, t.B[0], t.B[1], t.B[2], t.B[3], t.B[4]))
-            .Where(t => t.B[4]);   // B4 alone already weighs 5: no other indicator may be on.
-        var forced = unsat.Solve();
-        Assert.NotNull(forced);
-        Assert.True(forced!.B[4]);
-        for (int i = 0; i < 4; i++)
+            .Solve();
+
+        solution.ShouldNotBeNull();
+
+        int sum = 0;
+        for (int i = 0; i < solution.B.Length; i++)
         {
-            if (i == 4) continue;
-            Assert.False(forced.B[i]);
+            if (solution.B[i])
+            {
+                sum += W[i];
+            }
         }
+
+        sum.ShouldBe(5);
+
+        // B4 alone weighs 5, so pinning B4 leaves the equality satisfied with nothing else on.
+        var pinned = ctx.NewTheorem<BoolQuintuple>()
+            .Where(t => Z3Methods.WeightedExactly(5, W, t.B[0], t.B[1], t.B[2], t.B[3], t.B[4]))
+            .Where(t => t.B[4])
+            .Solve();
+
+        pinned.ShouldNotBeNull();
+        pinned!.B.Count(set => set).ShouldBe(1);
+        pinned.B[4].ShouldBeTrue();
     }
 
-    [Fact]
+    [TestMethod]
     public void WeightedExactly_UnreachableBoundIsUnsat()
     {
+        // Weights {2, 3, 4, 6, 5} have no subset summing to 1, so equality with 1 has no solution -
+        // a fact only the pseudo-Boolean solver finds, since no single indicator is at fault.
         using var ctx = new Z3Context();
-        // Weights {2,3,4,6,5} have no subset summing to 1 (minimum positive weight is 2),
-        // so the equality band exactly-1 is unsat for a reason the PB solver must find.
-        var w = new int[] { 2, 3, 4, 6, 5 };
-        var theorem = ctx.NewTheorem<BoolQuintuple>()
-            .Where(t => Z3Methods.WeightedExactly(1, w, t.B[0], t.B[1], t.B[2], t.B[3], t.B[4]));
+        int[] weights = [2, 3, 4, 6, 5];
 
-        var result = theorem.Solve();
-        Assert.Null(result);
+        var solution = ctx.NewTheorem<BoolQuintuple>()
+            .Where(t => Z3Methods.WeightedExactly(1, weights, t.B[0], t.B[1], t.B[2], t.B[3], t.B[4]))
+            .Solve();
+
+        solution.ShouldBeNull();
     }
 
-    [Fact]
+    [TestMethod]
     public void WeightedBand_ComposesWithExactlyOneSelection()
     {
-        // The canonical notebook 09 shape: pick exactly one recipe per slot (one-hot),
-        // then enforce a nutrition band on the weighted sum over ALL slots.
+        // The one-hot-plus-band shape: exactly one option is picked, and the weighted sum has to
+        // land on 4 - which only B2 satisfies, so the solution is decided rather than merely found.
         using var ctx = new Z3Context();
-        var theorem = ctx.NewTheorem<BoolQuintuple>()
+
+        var solution = ctx.NewTheorem<BoolQuintuple>()
             .Where(t => Z3Methods.ExactlyOne(t.B[0], t.B[1], t.B[2], t.B[3], t.B[4]))
             .Where(t => Z3Methods.WeightedAtLeast(4, W, t.B[0], t.B[1], t.B[2], t.B[3], t.B[4]))
-            .Where(t => Z3Methods.WeightedAtMost(4, W, t.B[0], t.B[1], t.B[2], t.B[3], t.B[4]));
+            .Where(t => Z3Methods.WeightedAtMost(4, W, t.B[0], t.B[1], t.B[2], t.B[3], t.B[4]))
+            .Solve();
 
-        var result = theorem.Solve();
-        Assert.NotNull(result);
-        // Exactly-one + band [4,4] forces the single selected indicator to weigh exactly 4: B2.
-        Assert.True(result!.B[2]);
-        for (int i = 0; i < 5; i++)
-        {
-            if (i == 2) continue;
-            Assert.False(result.B[i]);
-        }
+        solution.ShouldNotBeNull();
+        solution!.B.Count(set => set).ShouldBe(1);
+        solution.B[2].ShouldBeTrue();
     }
 
-    [Fact]
+    [TestMethod]
     public void WeightMismatch_ThrowsAtTranslation()
     {
+        // Two weights for three indicators describes nothing, so it is refused rather than silently
+        // paired up to whichever length is shorter.
         using var ctx = new Z3Context();
-        var theorem = ctx.NewTheorem<BoolQuintuple>()
-            .Where(t => Z3Methods.WeightedAtLeast(7, new int[] { 3, 1 }, t.B[0], t.B[1], t.B[2]));
+        int[] tooFew = [3, 1];
 
-        // The visitor runs at solve time; the length mismatch must surface as a clear error.
-        Assert.Throws<InvalidOperationException>(() => theorem.Solve());
+        var theorem = ctx.NewTheorem<BoolQuintuple>()
+            .Where(t => Z3Methods.WeightedAtLeast(7, tooFew, t.B[0], t.B[1], t.B[2]));
+
+        Should.Throw<InvalidOperationException>(() => theorem.Solve());
+    }
+
+    [TestMethod]
+    public void WeightedBand_OverARuntimeGroup_IsTranslated()
+    {
+        // A band whose group size and bound are runtime values: the weights are computed, the
+        // indicators are selected over the group, and neither is written out at the call site.
+        using var ctx = new Z3Context();
+        const int GroupSize = 5;
+        int[] weights = Enumerable.Repeat(1, GroupSize).ToArray();
+
+        var solution = ctx.NewTheorem<BoolQuintuple>()
+            .Where(t => Z3Methods.WeightedExactly(
+                GroupSize,
+                weights,
+                Enumerable.Range(0, GroupSize).Select(i => t.B[i]).ToArray()))
+            .Solve();
+
+        solution.ShouldNotBeNull();
+        solution!.B.All(set => set).ShouldBeTrue();
     }
 }

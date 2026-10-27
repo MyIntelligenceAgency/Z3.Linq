@@ -1,104 +1,152 @@
 namespace Z3.Linq.Tests;
 
-using Xunit;
+#pragma warning disable CS1591
 
 /// <summary>
-/// Regression tests for the unweighted Pseudo-Boolean magic methods
-/// (<see cref="Z3Methods.ExactlyOne"/>, <see cref="Z3Methods.AtMostOne"/>,
-/// <see cref="Z3Methods.AtLeastOne"/>), the last open item of backlog tracker #4616
-/// (see issue #10605). They map to native Z3 <c>ctx.MkPBGe</c> on the indicators
-/// and their negations, instead of an <c>MkIte + MkAdd</c> expansion -- measurably
-/// cheaper: pb-bench c.8247 records ~half the AST nodes and 3-6x faster solving on
-/// the planner 7x5 instance and up to n=100.
+/// The unweighted pseudo-Boolean magic methods: <see cref="Z3Methods.ExactlyOne"/>,
+/// <see cref="Z3Methods.AtMostOne"/> and <see cref="Z3Methods.AtLeastOne"/>.
 /// </summary>
+/// <remarks>
+/// They map onto native Z3 pseudo-Boolean constraints (<c>MkPBGe</c> over the indicators and their
+/// negations) rather than onto an <c>Ite</c>-and-add expansion, so Z3's own cardinality propagation
+/// applies and the term does not grow quadratically in the group size.
+/// </remarks>
+[TestClass]
 public class UnweightedPbTests
 {
+    /// <summary>Five flags, the group the cardinality constraints are stated over.</summary>
     public class BoolQuintuple
     {
+        /// <summary>Gets or sets the five flags.</summary>
         public bool[] B { get; set; } = new bool[5];
     }
 
-    [Fact]
+    [TestMethod]
     public void ExactlyOne_SelectsExactlyOneIndicator()
     {
         using var ctx = new Z3Context();
-        var theorem = ctx.NewTheorem<BoolQuintuple>()
-            .Where(t => Z3Methods.ExactlyOne(t.B[0], t.B[1], t.B[2], t.B[3], t.B[4]));
 
-        var result = theorem.Solve();
+        var solution = ctx.NewTheorem<BoolQuintuple>()
+            .Where(t => Z3Methods.ExactlyOne(t.B[0], t.B[1], t.B[2], t.B[3], t.B[4]))
+            .Solve();
 
-        Assert.NotNull(result);
-        var trueCount = System.Linq.Enumerable.Range(0, 5).Count(i => result!.B[i]);
-        Assert.Equal(1, trueCount);
+        solution.ShouldNotBeNull();
+        solution!.B.Count(set => set).ShouldBe(1);
     }
 
-    [Fact]
+    [TestMethod]
     public void ExactlyOne_WithForcedTwoIsUnsat()
     {
         using var ctx = new Z3Context();
-        var theorem = ctx.NewTheorem<BoolQuintuple>()
-            .Where(t => Z3Methods.ExactlyOne(t.B[0], t.B[1], t.B[2], t.B[3], t.B[4]))
-            .Where(t => t.B[0] && t.B[1]);   // force two on, breaks exactly-one
 
-        var result = theorem.Solve();
-        Assert.Null(result);
+        var solution = ctx.NewTheorem<BoolQuintuple>()
+            .Where(t => Z3Methods.ExactlyOne(t.B[0], t.B[1], t.B[2], t.B[3], t.B[4]))
+
+            // Forcing two on contradicts the cardinality constraint.
+            .Where(t => t.B[0] && t.B[1])
+            .Solve();
+
+        solution.ShouldBeNull();
     }
 
-    [Fact]
+    [TestMethod]
     public void AtMostOne_AllowsZeroOrOne()
     {
+        // Three halves that only mean something together: zero allowed, one allowed, two
+        // forbidden. A constraint that were not asserted at all would let the third half pass.
         using var ctx = new Z3Context();
+
         var theorem = ctx.NewTheorem<BoolQuintuple>()
             .Where(t => Z3Methods.AtMostOne(t.B[0], t.B[1], t.B[2], t.B[3], t.B[4]));
 
-        var sat0 = theorem.Where(t => !t.B[0] && !t.B[1] && !t.B[2] && !t.B[3] && !t.B[4]).Solve();
-        Assert.NotNull(sat0);  // zero is allowed.
+        var none = theorem.Where(t => !t.B[0] && !t.B[1] && !t.B[2] && !t.B[3] && !t.B[4]).Solve();
+        none.ShouldNotBeNull();
 
-        var sat1 = theorem.Where(t => t.B[2] && !t.B[0] && !t.B[1] && !t.B[3] && !t.B[4]).Solve();
-        Assert.NotNull(sat1);  // exactly one is allowed.
+        var exactlyOne = theorem.Where(t => t.B[2] && !t.B[0] && !t.B[1] && !t.B[3] && !t.B[4]).Solve();
+        exactlyOne.ShouldNotBeNull();
 
-        var unsat = theorem.Where(t => t.B[0] && t.B[1]).Solve();
-        Assert.Null(unsat);    // two is forbidden.
+        var two = theorem.Where(t => t.B[0] && t.B[1]).Solve();
+        two.ShouldBeNull();
     }
 
-    [Fact]
+    [TestMethod]
     public void AtLeastOne_ForbidsAllFalse()
     {
         using var ctx = new Z3Context();
+
         var theorem = ctx.NewTheorem<BoolQuintuple>()
             .Where(t => Z3Methods.AtLeastOne(t.B[0], t.B[1], t.B[2], t.B[3], t.B[4]));
 
-        var sat1 = theorem.Where(t => t.B[2]).Solve();
-        Assert.NotNull(sat1);
+        var oneSet = theorem.Where(t => t.B[2]).Solve();
+        oneSet.ShouldNotBeNull();
 
-        var unsat = theorem.Where(t => !t.B[0] && !t.B[1] && !t.B[2] && !t.B[3] && !t.B[4]).Solve();
-        Assert.Null(unsat);
+        var allClear = theorem
+            .Where(t => !t.B[0] && !t.B[1] && !t.B[2] && !t.B[3] && !t.B[4])
+            .Solve();
+        allClear.ShouldBeNull();
     }
 
-    [Fact]
+    [TestMethod]
     public void ExactlyOne_ComposesWithArithmetic()
     {
-        // Each indicator picks a recipe (slot index); exactly one recipe must be picked.
-        // The slot index must satisfy an arithmetic constraint. This is the canonical
-        // "one-hot" shape that notebook 09 (meal planner) needs.
+        // The one-hot shape: exactly one option is picked, and a further constraint pins which.
         using var ctx = new Z3Context();
-        var theorem = ctx.NewTheorem<BoolQuintuple>()
-            .Where(t => Z3Methods.ExactlyOne(t.B[0], t.B[1], t.B[2], t.B[3], t.B[4]))
-            .Where(t => t.B[2]);   // forces the third indicator
 
-        var result = theorem.Solve();
-        Assert.NotNull(result);
-        Assert.True(result!.B[2]);
-        for (int i = 0; i < 5; i++)
+        var solution = ctx.NewTheorem<BoolQuintuple>()
+            .Where(t => Z3Methods.ExactlyOne(t.B[0], t.B[1], t.B[2], t.B[3], t.B[4]))
+            .Where(t => t.B[2])
+            .Solve();
+
+        solution.ShouldNotBeNull();
+        solution!.B[2].ShouldBeTrue();
+
+        for (int i = 0; i < solution.B.Length; i++)
         {
-            if (i == 2) continue;
-            Assert.False(result.B[i]);
+            if (i == 2)
+            {
+                continue;
+            }
+
+            solution.B[i].ShouldBeFalse();
         }
     }
 
-    // Note: empty-indicator edge cases (ExactlyOne() with no args) are handled in
-    // the visitor's degenerate path (n==0 -> MkTrue/MkFalse depending on the operator).
-    // We don't add separate tests here because the production code path (notebook 09)
-    // always passes a populated indicator array -- the meal planner has slot cardinalities
-    // and a category has at least one recipe.
+    [TestMethod]
+    public void AtLeastOne_OverARuntimeGroup_IsTranslated()
+    {
+        // The point of the variadic shape: the group size is a value, not the number of arguments
+        // written at the call site. Written out, this constraint would need one argument per flag.
+        using var ctx = new Z3Context();
+        const int GroupSize = 5;
+
+        var solution = ctx.NewTheorem<BoolQuintuple>()
+            .Where(t => Z3Methods.AtLeastOne(
+                Enumerable.Range(0, GroupSize).Select(i => t.B[i]).ToArray()))
+            .Solve();
+
+        solution.ShouldNotBeNull();
+        solution!.B.Count(set => set).ShouldBeGreaterThanOrEqualTo(1);
+    }
+
+    [TestMethod]
+    public void EmptyGroup_IsDecided()
+    {
+        // Nothing can make one of zero indicators true, and at most one of zero holds vacuously.
+        using var ctx = new Z3Context();
+
+        ctx.NewTheorem<BoolQuintuple>()
+            .Where(t => Z3Methods.AtMostOne())
+            .Solve()
+            .ShouldNotBeNull();
+
+        ctx.NewTheorem<BoolQuintuple>()
+            .Where(t => Z3Methods.ExactlyOne())
+            .Solve()
+            .ShouldBeNull();
+
+        ctx.NewTheorem<BoolQuintuple>()
+            .Where(t => Z3Methods.AtLeastOne())
+            .Solve()
+            .ShouldBeNull();
+    }
 }
