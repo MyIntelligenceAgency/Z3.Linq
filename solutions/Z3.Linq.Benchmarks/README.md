@@ -35,8 +35,10 @@ InProcess toolchain, `InvocationCount=1`, 5 warmup / 15 iterations; the run of
 record for the .NET 11 runtime-gains EPIC, CoursIA #18770).
 
 Le corpus étendu de quatorze charges est mesuré sur une même machine dans
-[`BASELINE-extended-net8.0.md`](BASELINE-extended-net8.0.md), avec la méthode de
-lancement et les avertissements de mesure.
+[`BASELINE-extended-net8.0.md`](BASELINE-extended-net8.0.md), et les trois jambes
+runtime .NET 9/10/11 RC sont comparées dans
+[`BASELINE-multi-runtime.md`](BASELINE-multi-runtime.md), avec la méthode de lancement
+et les avertissements de mesure.
 
 ## Running it
 
