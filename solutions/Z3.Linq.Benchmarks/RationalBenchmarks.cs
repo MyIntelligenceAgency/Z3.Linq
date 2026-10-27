@@ -1,7 +1,7 @@
 using BenchmarkDotNet.Attributes;
 using Z3.Linq;
 
-namespace Z3Linq.Benchmarks;
+namespace Z3.Linq.Benchmarks;
 
 /// <summary>
 /// Micro-bancs de <see cref="Rational"/> (numérateur/dénominateur longs, forme réduite) :

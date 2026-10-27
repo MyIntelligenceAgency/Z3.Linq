@@ -248,10 +248,10 @@ Add the `Z3.Linq` package. No platform target is needed: `Microsoft.Z3` supplies
 
 ## Benchmarks
 
-Le dépôt porte un banc [BenchmarkDotNet](https://benchmarkdotnet.org/) (`benchmarks/Z3Linq.Benchmarks`, projet intégré à `solutions/Z3.Linq.sln`) qui exerce l'API publique du provider LINQ-to-Z3 : pipeline complet de théorème (`Solve()` — contexte, réécriture d'arbre, AST Z3, solve, extraction du modèle) et constante `Rational`. La baseline mesurée et le protocole de reproduction vivent dans [`benchmarks/BASELINE-net8.0.md`](benchmarks/BASELINE-net8.0.md) — c'est le point de mesure de référence du dépôt pour les deltas runtime .NET 9/10/11 (CoursIA #18770).
+Le projet [`solutions/Z3.Linq.Benchmarks`](solutions/Z3.Linq.Benchmarks/), intégré à `solutions/Z3.Linq.slnx`, exerce l'API publique du provider LINQ-to-Z3 : les formes d'environnement de `SolveBenchmarks`, le pipeline complet de théorème (`TheoremPipelineBenchmarks`) et la constante `Rational`. Les baselines net8/net10 et le corpus étendu sont publiés avec leurs protocoles de reproduction ; ils servent de référence aux deltas runtime (CoursIA #18770).
 
 ```bash
-dotnet run --project benchmarks/Z3Linq.Benchmarks -c Release
+dotnet run --project solutions/Z3.Linq.Benchmarks -c Release -f net8.0 -- --filter '*'
 ```
 
 ## Contributing

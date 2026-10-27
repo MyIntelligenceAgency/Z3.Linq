@@ -1,18 +1,17 @@
 using BenchmarkDotNet.Attributes;
 using Z3.Linq;
 
-namespace Z3Linq.Benchmarks;
+namespace Z3.Linq.Benchmarks;
 
 /// <summary>
 /// Bancs du pipeline public LINQ vers Z3 (issue CoursIA #18770, fille de l'EPIC #18695).
 /// Chaque itération paie le pipeline complet qu'un appelant paie : création du contexte,
 /// réécriture de l'arbre d'expression, construction des AST Z3, solve et extraction du modèle.
 ///
-/// Les théorèmes utilisent les deux chemins de matérialisation **fonctionnels à la tête
-/// mesurée** : types anonymes (démontrés par le démo du dépôt) et <see cref="Symbols{T1,T2,T3,T4,T5}"/>
-/// (prouvé par ce banc). Le chemin ValueTuple du démo lève
-/// <c>NotSupportedException</c> à la matérialisation (voir issue amont) — il n'est pas
-/// mesurable en l'état.
+/// Les théorèmes exercent les deux chemins de matérialisation de l'API : types anonymes
+/// (bool et int) et <see cref="Symbols{T1,T2,T3,T4,T5}"/> (entiers et réels). Le chemin
+/// ValueTuple est couvert séparément par <c>SolveBenchmarks</c>, sur la même suite et le
+/// même protocole, afin de ne pas confondre un coût de pipeline avec un coût de forme.
 /// </summary>
 [MemoryDiagnoser]
 [Config(typeof(BenchConfig))]
@@ -48,8 +47,8 @@ public class TheoremPipelineBenchmarks
 
     /// <summary>
     /// Contraintes réelles (problème d'achat pétrolier du démo) : chemin arithmétique réel.
-    /// Via <see cref="Symbols{T1,T2}"/> (X1 = vz, X2 = sa) — la matérialisation du type
-    /// anonyme ne supporte que bool/int à la tête mesurée (Theorem.cs:1128).
+    /// Via <see cref="Symbols{T1,T2}"/>, qui nomme les deux variables (X1 = vz, X2 = sa) ;
+    /// les types anonymes empruntent désormais le même marshaller, mais n'offrent pas ces noms.
     /// </summary>
     [Benchmark(Description = "Solve reals (oil purchase)")]
     public Symbols<double, double> SolveOilPurchase()
