@@ -63,10 +63,14 @@ différents : **+37 % à +101 %** (#46, composition 6 charges) contre **+82 % à
 
 La cause est mesurée, pas supposée : **la composition du processus**. La suite
 complète de #47 rejouée sur ce poste, avec le même binaire `net8.0` et les mêmes
-runtimes, reproduit les chiffres publiés de #47 au kilooctet près — `ScalarSymbols`
-13.59, `ValueTuple` 13.76, `NestedObject` 15.53 — alors que la *même* charge, sous le
-*même* runtime, n'alloue que 6.42 KB lorsque les six charges `Solve` sont seules à
-tourner.
+runtimes, reproduit les chiffres publiés de #47 **au kilooctet près sur la colonne
+.NET 10** — `ScalarSymbols` 13.59, `ValueTuple` 13.76, `NestedObject` 15.53 — alors
+que la *même* charge, sous le *même* runtime, n'alloue que 6.42 KB lorsque les six
+charges `Solve` sont seules à tourner. **Précision (contre-vérification po-2023 du
+2026-10-29)** : la colonne .NET 8 à 14 charges s'écarte des publiés de #47 sur deux
+charges sur six (+11 % et +8 % ; `ScalarSymbols` 5.71 contre 5.15 publiés), les
+quatre autres restant exactes — le « au kilooctet près » ne vaut donc que pour la
+colonne .NET 10.
 
 | Charge | 6 charges, .NET 8 | 6 charges, .NET 10 | 14 charges, .NET 8 | 14 charges, .NET 10 |
 | --- | ---: | ---: | ---: | ---: |
@@ -118,6 +122,28 @@ la famille (#46, #47, MetaGeneticSharp #58/#61, Automata) doit la traiter comme
 suspecte. C'est une question ouverte, pas un résultat : elle demande une jambe de
 contrôle dédiée — par exemple le même banc exécuté en job `ChildProcess`, ou les
 mêmes charges exécutées deux fois dans un même run.
+
+### Résolution (contrôle indépendant, 2026-10-29)
+
+La jambe de contrôle a été portée par po-2023 (tête `20fb5db` de #47,
+`BASELINE-multi-runtime.md` §5) avec un protocole plus fin que les deux propositions
+ci-dessus : **même assemblage quatorze charges, sans recompilation — seul le
+sous-ensemble qui exécute varie** (`--filter`), binaire et runtime tenus constants,
+ligne `[Host]` attestée par jambe :
+
+| Sous-ensemble exécuté | `ScalarSymbols` .NET 8 | `ScalarSymbols` .NET 10 |
+| --- | ---: | ---: |
+| 1 charge (`ScalarSymbols` seule) | 4.45 KB | 6.09 KB |
+| 6 charges `Solve` | 4.45 | 6.09 |
+| 14 charges (ordre mesuré : Rational → Solve → Theorem) | — | **13.59** |
+
+Verdict : **la présence des co-locataires est inerte ; la contamination exige leur
+exécution antérieure dans le même processus.** La colonne `Allocated` d'un run
+in-process est le triplet **(charge, ensemble des charges exécutées avant elle,
+runtime)** — pas une propriété de la charge. Une jambe `ChildProcess` préparée ici a
+été annulée pour redondance avant publication : elle n'est plus nécessaire pour la
+classification, et ne resterait utile que pour le mécanisme interne, qui reste non
+identifié.
 
 **Conséquence pour la famille.** `Allocated` n'est pas une propriété de la charge :
 c'est une propriété du triplet **(charge, composition du processus, runtime)**. Deux
@@ -171,4 +197,7 @@ Ces mesures sont **une** lecture, sur **un** poste, avec les runtimes .NET 8.0.3
 9.0.22 et 10.0.14. .NET 11 RC n'est pas installé ici : la colonne .NET 11 de #47 n'a
 pas été rejouée. Le mécanisme précis de l'amplification par composition n'est pas
 identifié non plus — la mesure établit sa présence, son ordre de grandeur et la classe
-qui la déclenche (`Rational`), pas le mécanisme interne.
+qui la déclenche (`Rational`), pas le mécanisme interne. **La classification, elle,
+est tranchée** (contrôle indépendant du 2026-10-29 ci-dessus, § Résolution) :
+`Allocated` in-process est une propriété du **processus** — de l'ensemble exécuté
+avant la charge — et non de la charge seule.
