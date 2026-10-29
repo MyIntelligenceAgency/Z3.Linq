@@ -117,9 +117,48 @@ jambe, 2026-10-29 :
   complète, l'ordre d'exécution est `Rational` → `Solve` → `TheoremPipeline` ; les six
   charges `Solve`, mesurées après l'exécution des quatre charges `Rational`, passent à
   13,59 KB.
-- **Reproduction** : la jambe complète retrouve les valeurs publiées au kilooctet près
-  (`ScalarSymbols` 13,59, `Collection` 15,75, `WideSymbols` 17,44), et la jambe à six
-  charges retrouve celles de #46 (6,09 / 11,59 / 11,81).
+- **Reproduction, bornée à la colonne .NET 10** : la jambe complète exécutée sous .NET 10
+  retrouve les valeurs publiées au kilooctet près (`ScalarSymbols` 13,59, `Collection`
+  15,75, `WideSymbols` 17,44), et la jambe à six charges retrouve celles de #46
+  (6,09 / 11,59 / 11,81). La colonne **.NET 8 à quatorze charges n'a pas été mesurée dans
+  cette jambe** — d'où le tiret du tableau ci-dessus ; elle l'a été depuis, voir
+  « Reproductibilité à quatorze charges » ci-dessous.
+
+### Reproductibilité à quatorze charges — trois passages (29/10)
+
+La colonne .NET 8 à quatorze charges manquait au tableau ci-dessus. Elle a été mesurée
+trois fois de suite le même jour : même binaire `net8.0`, même runtime
+(`[Host] : .NET 8.0.33`), même suite, `--filter '*'`, aucun fichier modifié entre les
+passages.
+
+| Charge | passage 1 | passage 2 | passage 3 | publié (27/10) | écart (max−min)/min |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `ScalarSymbols` | 5,71 | 5,71 | **4,77** | 5,15 | 20 % |
+| `ValueTuple` | 5,88 | 5,88 | **4,94** | 5,88 | 19 % |
+| `NestedObject` | 7,64 | 7,36 | 7,64 | 7,64 | 4 % |
+| `Collection` | 7,85 | 7,85 | 7,85 | 6,91 | 0 % |
+| `WideSymbols` | 9,55 | 9,55 | **8,94** | 9,55 | 7 % |
+| `Optimize` | 6,27 | **7,20** | 7,20 | 6,59 | 15 % |
+
+**Verdict.** À composition quatorze, la colonne `Allocated` **n'est pas reproductible
+d'un passage à l'autre** sur le même poste : jusqu'à **20 %** d'écart entre deux passages
+de la même suite. Ce n'est pas une dérive monotone — le passage 3 abaisse trois charges
+et laisse `Collection` strictement inchangée — donc ce n'est ni un effet de charge
+machine ni un simple vieillissement du poste : la composition du processus n'est **pas**
+entièrement déterminée par la liste des charges, même à liste identique.
+
+**Conséquence de publication, et elle est stricte** : à quatorze charges, un chiffre
+`Allocated` unique n'a pas de sens — il faut **n ≥ 3 passages** et l'**intervalle**. La
+baseline à six charges ([BASELINE-net8.0.md](BASELINE-net8.0.md) /
+[BASELINE-net10.0.md](BASELINE-net10.0.md)) reste publiable à ±3 % entre passages
+(#46, run 2) : c'est la composition large qui est instable, pas la mesure en général.
+
+**Provenance de la valeur 5,71.** Le contrôle croisé de #46 l'attribue à une
+« contre-vérification po-2023 » ; elle vient de ce passage-ci, pas de la jambe de
+contrôle du matin, dont le tableau porte un tiret pour cette case. L'écart que #46
+signale (« +11 % / +8 % contre les publiés de #47 ») n'est donc pas une erreur de
+publication : c'est la **variance inter-passages** que ces trois mesures établissent, et
+qui s'étend jusqu'à 20 %.
 
 **Conclusion.** La colonne `Allocated` d'un run in-process n'est pas une propriété de la
 charge : c'est une propriété du triplet **(charge, ensemble exécuté avant elle,
@@ -140,7 +179,11 @@ l'allocation mesurée des charges `Solve` — reste non identifié.
   fois (17,04 / 11,67 / 24,49 ms, contrôle croisé de #46) ; sur le poste de ce document,
   la même charge .NET 8 publiée à 12,85 ms donne 8,0–8,4 ms le 29/10 en jambes filtrées
   (compositions 1 et 6). Ces deltas de vitesse sont donc une **tendance**, pas un
-  verdict ; la grandeur reproductible d'un run à l'autre est l'allocation, pas le temps.
+  verdict. Et l'allocation ne sauve pas la règle posée initialement ici : reproductible
+  à ±3 % à composition six (#46, run 2), elle varie jusqu'à **20 % entre passages** à
+  composition quatorze (trois passages du 29/10, § ci-dessus). À composition large,
+  **aucune** des deux colonnes n'est un chiffre ponctuel publiable : il faut n ≥ 3
+  passages et un intervalle.
 - **Le pipeline complet n'a pas un gain uniforme.** `Solve ints` et `Solve reals`
   baissent d'environ 27 % sur .NET 11, mais `Solve bool pair` et `Solve Symbols 5 vars`
   restent dans quelques pour cent. `ScalarSymbols` est même 6 % plus lent, écart non
@@ -159,6 +202,13 @@ l'allocation mesurée des charges `Solve` — reste non identifié.
   composition y est constante — jamais entre publications de compositions différentes.
   Toute optimisation qui s'appuierait dessus doit citer la composition sous laquelle
   elle a été mesurée.
+- **Les deltas runtime inférieurs à la variance inter-passages ne sont pas des
+  résultats.** Les colonnes .NET 10 et .NET 11 RC à quatorze charges diffèrent de 3 % à
+  5 % selon la charge (`ScalarSymbols` 13,59 → 14,22, `WideSymbols` 17,44 → 18,04) :
+  c'est **sous** les 20 % de variance mesurés entre passages de la même jambe. Ces deux
+  colonnes ne se départagent donc pas avec ce protocole. Ce qui reste établi, à
+  quatorze charges, est le saut .NET 8 → .NET 9/10 (×1,8 à ×2,6), très au-delà de la
+  variance, et constant entre les quatre jambes.
 - **Avertissements conservés** : `MinIterationTime` sur les quatorze charges et
   distributions multimodales sur plusieurs formes, dans les quatre journaux. Les deltas
   inférieurs à l'`Error` ne sont pas des résultats.
