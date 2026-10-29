@@ -100,12 +100,24 @@ retirer les quatre charges `TheoremPipeline` ne la change pas. **Les charges
 mesure observable.
 
 L'amplification est elle-même dépendante du runtime : **+1.26 KB** sur .NET 8,
-**+7.17 KB** sur .NET 10, à composition identique. Le mécanisme interne n'est pas
-identifié — l'hypothèse la plus économique est que les champs `static readonly` de
-`RationalBenchmarks` (`Third`, `TwoSixths`, `Seventh`) instancient des AST Z3 dans le
-contexte par défaut du processus, et que le chemin managé d'interopération alloue
-davantage dès que ce contexte a été peuplé, sur .NET 9+ ; cette hypothèse est une
-hypothèse, pas une mesure, et elle demande sa propre jambe de contrôle.
+**+7.17 KB** sur .NET 10, à composition identique.
+
+Le mécanisme interne **n'est pas identifié**, et la première hypothèse est
+**falsifiée par la source** : `Rational` est une `readonly struct` purement managée
+(`Numerator` et `Denominator`, deux `long`, réduction par GCD) et `RationalBenchmarks`
+n'appelle **aucun** contexte Z3, aucun AST, aucune fonction native — sa charge
+`ToStringLiteral` formate un rationnel en mémoire. **Le déclencheur est donc un jeu
+de charges qui ne touche jamais le solveur**, et son effet sur l'allocation mesurée
+des charges qui le touchent ne peut pas s'expliquer par un état du solveur.
+
+Ce qui reste ouvert — et c'est le point important — est de savoir si la colonne
+`Allocated` mesurée par `MemoryDiagnoser` dans un run **in-process** est une
+propriété de la charge ou du processus. Si des charges sans rapport y contribuent, la
+colonne n'est pas une propriété du banc, et toute comparaison entre publications de
+la famille (#46, #47, MetaGeneticSharp #58/#61, Automata) doit la traiter comme
+suspecte. C'est une question ouverte, pas un résultat : elle demande une jambe de
+contrôle dédiée — par exemple le même banc exécuté en job `ChildProcess`, ou les
+mêmes charges exécutées deux fois dans un même run.
 
 **Conséquence pour la famille.** `Allocated` n'est pas une propriété de la charge :
 c'est une propriété du triplet **(charge, composition du processus, runtime)**. Deux
