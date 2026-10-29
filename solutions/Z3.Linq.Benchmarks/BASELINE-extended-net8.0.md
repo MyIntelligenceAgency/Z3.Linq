@@ -97,3 +97,5 @@ dotnet run --project solutions/Z3.Linq.Benchmarks -c Release -f net8.0 -- --filt
 
 Le protocole InProcess vit dans `SolveBenchmarks.cs` et `PipelineConfig.cs`. Il est
 identique à celui des baselines sœurs MetaGeneticSharp et Automata (CoursIA #18770).
+Les trois jambes runtime .NET 9/10/11 RC, sur ce même corpus et ce même binaire, sont
+dans [`BASELINE-multi-runtime.md`](BASELINE-multi-runtime.md).

@@ -248,7 +248,7 @@ Add the `Z3.Linq` package. No platform target is needed: `Microsoft.Z3` supplies
 
 ## Benchmarks
 
-Le projet [`solutions/Z3.Linq.Benchmarks`](solutions/Z3.Linq.Benchmarks/), intégré à `solutions/Z3.Linq.slnx`, exerce l'API publique du provider LINQ-to-Z3 : les formes d'environnement de `SolveBenchmarks`, le pipeline complet de théorème (`TheoremPipelineBenchmarks`) et la constante `Rational`. Les baselines net8/net10 et le corpus étendu sont publiés avec leurs protocoles de reproduction ; ils servent de référence aux deltas runtime (CoursIA #18770).
+Le projet [`solutions/Z3.Linq.Benchmarks`](solutions/Z3.Linq.Benchmarks/), intégré à `solutions/Z3.Linq.slnx`, exerce l'API publique du provider LINQ-to-Z3 : les formes d'environnement de `SolveBenchmarks`, le pipeline complet de théorème (`TheoremPipelineBenchmarks`) et la constante `Rational`. Les baselines net8/net10, le corpus étendu et la comparaison multi-runtime .NET 8/9/10/11 sont publiés avec leurs protocoles de reproduction ; ils servent de référence aux deltas runtime (CoursIA #18770).
 
 ```bash
 dotnet run --project solutions/Z3.Linq.Benchmarks -c Release -f net8.0 -- --filter '*'
