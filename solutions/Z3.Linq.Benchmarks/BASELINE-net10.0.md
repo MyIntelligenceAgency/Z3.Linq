@@ -69,7 +69,7 @@ enfant pour les runs delta multi-runtime (`--runtimes`).
 - Colonnes Gen0/Gen1/Gen2 à 1000.0/1000 op = 1 collection par opération : BDN
   force le GC entre itérations quand `InvocationCount=1` ; la comparabilité
   inter-TFM et inter-sœurs tient car toutes partagent ce protocole.
-- Deltas vers la jumelle .NET 8, **mesurés 2 fois** (même machine, même
+- Deltas vers la jumelle .NET 8, **mesurés 3 fois** (même machine, même
   protocole, même jour) :
   - `Mean` — **non concluant**. Le run 1 donnait .NET 10 plus rapide sur
     5 shapes sur 6 (`ScalarSymbols` -32 %, `Collection` -20 %) ; le run 2 donne
@@ -77,8 +77,14 @@ enfant pour les runs delta multi-runtime (`--runtimes`).
     (11.85 vs 10.27 ms). Le `Mean` de la jumelle .NET 8 varie lui-même de -32 %
     à -4 % d'un run à l'autre, et les `RatioSD` (0.14 à 0.20) recouvrent 1.0 :
     l'amplitude du bruit dépasse l'écart inter-TFM. Aucune conclusion de vitesse.
-  - **Allocations — reproduites.** Hausse sur les six shapes dans les deux
+  - **Allocations — reproduites.** Hausse sur les six shapes dans les trois
     runs, +37 % à +101 % selon la shape (`ScalarSymbols` +37 %, `ValueTuple`
     +95…+101 %, `NestedObject` +73…+74 %). Les valeurs par opération sont
-    stables à ±3 % entre runs (6.09 KB identique sur `ScalarSymbols`), donc
-    cette régression-là est un fait mesuré, pas du bruit.
+    stables à ±3 % entre runs pour ce TFM (6.09 KB identique sur `ScalarSymbols`
+    au run 3 aussi), donc cette régression-là est un fait mesuré, pas du bruit.
+    Ce seuil ne vaut en revanche pas pour le TFM .NET 8, dont `Optimize` varie
+    de 6.55 à 5.94 KB (-9 %). Voir
+    [`BASELINE-runtime-crosscheck.md`](BASELINE-runtime-crosscheck.md) : le
+    contrôle croisé isole le runtime de la cible de compilation et montre que
+    **la composition du processus** est le facteur qui change l'ampleur de ce
+    delta (+1.64 KB à composition 6 charges, +7.88 KB à composition 14).

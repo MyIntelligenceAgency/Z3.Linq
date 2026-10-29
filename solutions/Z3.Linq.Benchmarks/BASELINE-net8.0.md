@@ -69,17 +69,25 @@ enfant pour les runs delta multi-runtime (`--runtimes`).
 - Colonnes Gen0/Gen1/Gen2 à 1000.0/1000 op = 1 collection par opération : BDN
   force le GC entre itérations quand `InvocationCount=1` ; la comparabilité
   inter-TFM et inter-sœurs tient car toutes partagent ce protocole.
-- **Bruit de mesure mesuré (2 runs, même machine, même protocole)** : le `Mean`
-  de ce TFM varie de -32 % à -4 % d'un run à l'autre
-  (`ScalarSymbols` 17.04 → 11.67 ms, `NestedObject` 14.42 → 9.65 ms). Cette
-  amplitude est du même ordre que les écarts inter-TFM qui avaient été
-  rapportés : **aucune conclusion de vitesse ne s'appuie sur ces deux runs**.
-  Les `RatioSD` (0.14 à 0.20) recouvrent 1.0 sur chaque shape.
-- **Ce qui se reproduit, en revanche : les allocations.** Identiques à ±3 %
-  entre les deux runs (4.45 / 4.89 / 6.66→6.7 / 6.59→7.2 / 8.89→8.56 /
-  6.55 KB), donc mesurables. Vers la jumelle .NET 10, elles augmentent sur
-  **les six shapes dans les deux runs** : +37 % à +101 % selon la shape
-  (`ScalarSymbols` +37 %, `ValueTuple` +95…+101 %). C'est le seul écart
-  inter-TFM que la répétition corrobore.
-- Le `Mean` ~10-17 ms est dominé par le travail par-solve de la lib (réflexion,
-  traduction, marshalling), pas par le solveur — voir le README de la suite.
+- **Bruit de mesure mesuré (3 runs, même machine, même protocole)** : le `Mean`
+  de ce TFM varie de -32 % à +74 % d'un run à l'autre
+  (`ScalarSymbols` 17.04 → 11.67 → 24.49 ms, `NestedObject` 14.42 → 9.65 ms).
+  Cette amplitude — un facteur 2.1 sur la jambe `ScalarSymbols` — est du même
+  ordre que les écarts inter-TFM qui avaient été rapportés : **aucune conclusion
+  de vitesse ne s'appuie sur ces runs**. Les `RatioSD` (0.14 à 0.20) recouvrent
+  1.0 sur chaque shape.
+- **Ce qui se reproduit, en revanche : les allocations.** ±3 % sur quatre shapes,
+  et jusqu'à -9 % sur `Optimize` (6.55 → 5.94 KB au run 3) : le seuil « ±3 % »
+  annoncé au run 2 était trop serré, il est corrigé ici. Valeurs des trois runs :
+  4.45 / 4.89 / 6.66→6.7 / 6.59→7.2 / 8.89→8.56 / 6.55 KB. Vers la jumelle
+  .NET 10, elles augmentent sur **les six shapes dans les trois runs** :
+  +37 % à +101 % selon la shape (`ScalarSymbols` +37 %, `ValueTuple` +95…+101 %).
+  C'est le seul écart inter-TFM que la répétition corrobore.
+- **Contrôle croisé** : ce delta a été rejoué en isolant le runtime de la cible
+  de compilation, et en comparant la composition du processus — voir
+  [`BASELINE-runtime-crosscheck.md`](BASELINE-runtime-crosscheck.md). En résumé :
+  la cible de compilation n'est pas le facteur, mais **la composition du processus
+  l'est**. À composition égale, le même passage .NET 8 → .NET 10 vaut +1.64 KB
+  sur `ScalarSymbols` ; il vaut +7.88 KB quand huit charges supplémentaires
+  partagent le processus. Les colonnes `Allocated` de deux publications ne sont
+  donc comparables que si la composition du processus est tenue constante.
