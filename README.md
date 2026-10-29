@@ -246,6 +246,14 @@ Add the `Z3.Linq` package. No platform target is needed: `Microsoft.Z3` supplies
 > [!NOTE]
 > This applies from the next release onwards. The versions published so far depend on `Microsoft.Z3` 4.12.2 - the newest build on nuget.org - which ships native binaries for `win-x64` and `osx-x64` only. On Linux or arm64 those versions restore successfully and then throw `DllNotFoundException` on the first solve, so they do need [an x64 platform target](https://docs.microsoft.com/en-us/visualstudio/ide/how-to-configure-projects-to-target-platforms?view=vs-2022) on Windows or macOS. Releases are paused until Z3 publishes a current build to nuget.org - see [#60](https://github.com/endjin/Z3.Linq/issues/60).
 
+## Benchmarks
+
+Le projet [`solutions/Z3.Linq.Benchmarks`](solutions/Z3.Linq.Benchmarks/), intégré à `solutions/Z3.Linq.slnx`, exerce l'API publique du provider LINQ-to-Z3 : les formes d'environnement de `SolveBenchmarks`, le pipeline complet de théorème (`TheoremPipelineBenchmarks`) et la constante `Rational`. Les baselines net8/net10 et le corpus étendu sont publiés avec leurs protocoles de reproduction ; ils servent de référence aux deltas runtime (CoursIA #18770).
+
+```bash
+dotnet run --project solutions/Z3.Linq.Benchmarks -c Release -f net8.0 -- --filter '*'
+```
+
 ## Contributing
 
 There are a number of ways in which you could contribute to this project:
