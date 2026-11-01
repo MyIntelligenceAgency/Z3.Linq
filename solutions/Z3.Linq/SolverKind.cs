@@ -30,8 +30,11 @@ public enum SolverKind
     /// A solver specialised to the SMT-LIB logic named by <see cref="Z3Context.Logic"/>.
     /// </summary>
     /// <remarks>
-    /// Faster on the restricted fragment, and it rejects constraints outside it - which is the
-    /// point when the fragment is what a broken constraint violates.
+    /// Faster on the restricted fragment. The logic name is a strategy hint for Z3, not a type
+    /// gate: a solver built with <c>ctx.MkSolver(logic)</c> still answers constraints outside
+    /// the named fragment (measured on Z3 4.12.2 - QF_BV, QF_LIA and QF_NIA solvers each
+    /// returned SATISFIABLE on off-fragment formulas), so it must not be relied on to reject
+    /// them.
     /// </remarks>
     Logic = 2,
 }
