@@ -67,10 +67,35 @@ runtimes, reproduit les chiffres publiés de #47 **au kilooctet près sur la col
 .NET 10** — `ScalarSymbols` 13.59, `ValueTuple` 13.76, `NestedObject` 15.53 — alors
 que la *même* charge, sous le *même* runtime, n'alloue que 6.42 KB lorsque les six
 charges `Solve` sont seules à tourner. **Précision (contre-vérification po-2023 du
-2026-10-29)** : la colonne .NET 8 à 14 charges s'écarte des publiés de #47 sur deux
-charges sur six (+11 % et +8 % ; `ScalarSymbols` 5.71 contre 5.15 publiés), les
-quatre autres restant exactes — le « au kilooctet près » ne vaut donc que pour la
-colonne .NET 10.
+2026-10-29, rectifiée le 2026-11-06)** : le 5.71 ne vient **pas** de la jambe de
+contrôle du matin — celle-ci porte un **tiret** pour la case .NET 8 (`BASELINE-multi-runtime.md`
+§5, tableau « Charges qui exécutent » : quatorze charges mesurées en .NET 10 seulement).
+Il vient de **trois passages** du même protocole faits après la relecture (même binaire
+`net8.0`, même runtime `[Host] : .NET 8.0.33`, même suite, `--filter '*'`, aucun fichier
+modifié entre les passages, 29/10). Le cadrage initial « deux charges sur six » était
+**lui-même un échantillon de la variance** : le nombre de charges qui s'écartent des
+publiés de #47 vaut **3, puis 4, puis 5** selon le passage, et *lesquelles* changent —
+`Collection` s'écarte des trois fois (+13,6 %), `NestedObject` ne bouge que d'un passage
+à l'autre, et l'écart maximal entre deux passages de la même suite atteint **20 %**.
+
+| Charge | passage 1 | passage 2 | passage 3 | publié (27/10, #47) |
+| --- | ---: | ---: | ---: | ---: |
+| `ScalarSymbols` | 5,71 | 5,71 | 4,77 | 5,15 |
+| `ValueTuple` | 5,88 | 5,88 | 4,94 | 5,88 |
+| `NestedObject` | 7,64 | 7,36 | 7,64 | 7,64 |
+| `Collection` | 7,85 | 7,85 | 7,85 | 6,91 |
+| `WideSymbols` | 9,55 | 9,55 | 8,94 | 9,55 |
+| `Optimize` | 6,27 | 7,20 | 7,20 | 6,59 |
+
+Le mouvement n'est ni monotone ni une dérive du poste (le passage 3 abaisse trois
+charges et laisse `Collection` strictement inchangée) : ce n'est ni la charge machine
+ni un vieillissement, c'est la composition large qui casse la reproductibilité.
+**Conséquence** : à quatorze charges, un chiffre `Allocated` ponctuel ne devrait pas
+être publié — il faut n ≥ 3 passages et un intervalle, et tout delta runtime inférieur
+à ~20 % y est indistinguable de la variance (c'est le cas des colonnes .NET 10 et
+.NET 11 RC, 3–5 % d'écart). La § « Résolution » ci-dessous reste valide : ses jambes
+sont à composition 1 et 6 charges, où l'allocation reproduit à ±3 % (#46, run 2). Le
+tableau ci-dessous conserve les valeurs du **passage 1** pour mémoire.
 
 | Charge | 6 charges, .NET 8 | 6 charges, .NET 10 | 14 charges, .NET 8 | 14 charges, .NET 10 |
 | --- | ---: | ---: | ---: | ---: |
