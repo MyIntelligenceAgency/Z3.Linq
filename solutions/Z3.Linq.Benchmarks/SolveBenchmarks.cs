@@ -1,8 +1,19 @@
 namespace Z3.Linq.Benchmarks;
 
 using BenchmarkDotNet.Attributes;
+using BenchmarkDotNet.Configs;
+using BenchmarkDotNet.Jobs;
+using BenchmarkDotNet.Toolchains.InProcess.Emit;
 
 using Z3.Linq;
+
+// InProcess: avoids spawning a child process per benchmark (blocked by Defender on some
+// Windows machines, cf. the BDN warning) and keeps the measurement in the same runtime.
+// Same protocol as the sibling baselines (MetaGeneticSharp .NET 9, Automata .NET 8/9 —
+// CoursIA #18770): ShortRun, InvocationCount=1, UnrollFactor=1, 5 warmup / 15 iterations.
+// Multi-runtime delta runs (DOTNET_MULTI_RUNTIME=1): the InProcess job is NOT added and
+// BenchmarkDotNet falls back to its default (child process) toolchain with `--runtimes`,
+// since InProcess can only target one runtime per run.
 
 /// <summary>
 /// End-to-end <c>Solve</c>/<c>Optimize</c> across the environment shapes the library supports,
@@ -26,8 +37,24 @@ using Z3.Linq;
 /// </para>
 /// </remarks>
 [MemoryDiagnoser]
+[Config(typeof(InProcessShortConfig))]
 public class SolveBenchmarks
 {
+    private class InProcessShortConfig : ManualConfig
+    {
+        public InProcessShortConfig()
+        {
+            if (System.Environment.GetEnvironmentVariable("DOTNET_MULTI_RUNTIME") == "1")
+                return;
+
+            AddJob(Job.ShortRun
+                .WithToolchain(InProcessEmitToolchain.Instance)
+                .WithInvocationCount(1)
+                .WithUnrollFactor(1)
+                .WithWarmupCount(5)
+                .WithIterationCount(15));
+        }
+    }
     private Z3Context context = null!;
     private Theorem<Symbols<int, int>> scalar = null!;
     private Theorem<(int A, int B)> tuple = null!;

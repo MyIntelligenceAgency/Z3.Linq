@@ -22,6 +22,14 @@ re-does all of that every time - which is exactly what these numbers can be used
 | `WideSymbols` | more members to reflect and translate (`Symbols<int,int,int,int,int>`) |
 | `Optimize` | the optimiser's own solve path |
 
+## Baselines
+
+Reference measurements for both target frameworks live next to this README:
+[`BASELINE-net8.0.md`](BASELINE-net8.0.md) and [`BASELINE-net10.0.md`](BASELINE-net10.0.md)
+(same protocol as the sibling baselines in MetaGeneticSharp and Automata —
+InProcess toolchain, `InvocationCount=1`, 5 warmup / 15 iterations; the run of
+record for the .NET 11 runtime-gains EPIC, CoursIA #18770).
+
 ## Running it
 
 BenchmarkDotNet refuses to run outside Release.
