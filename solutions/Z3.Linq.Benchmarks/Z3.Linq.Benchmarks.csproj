@@ -4,6 +4,9 @@
     <OutputType>Exe</OutputType>
     <IsPackable>false</IsPackable>
     <RootNamespace>Z3.Linq.Benchmarks</RootNamespace>
+    <!-- Multi-cible pour les baselines par TFM (protocole CoursIA #18770) : la lib cible
+         net8.0;net10.0, le banc la suit pour mesurer chaque runtime. -->
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
     <!-- Benchmark classes and methods are the surface of a runnable tool, driven by
          BenchmarkDotNet's attributes, not a public API - a doc comment on each [Benchmark] would
          add nothing. The comments they do carry are still validated (Directory.Build.props). -->
