@@ -6,10 +6,24 @@ needed when building .NET solutions.
 $zerofailedExtensions = @(
     @{
         # References the extension from its GitHub repository. If it is not already installed, the
-        # latest version from 'main' is downloaded.
+        # referenced commit is downloaded.
+        #
+        # PINNED to 7fa91e302616accf3c65a2b95fff79f37fcc1ebb (2026-11-02, last commit before the
+        # ZeroFailed.Build.Common drift of 2026-11-10, whose "ZF v2 versioning updates" require the
+        # ZeroFailed v2 module while build.ps1 pins module 1.0.7 - see CoursIA #19237).
+        #
+        # The extension's own dependency, ZeroFailed.Build.Common, is declared without a GitRef in its
+        # manifest and therefore resolves to 'main' with no override possible from this file (the 1.0.7
+        # loader matches the installed folder name exactly and has no lockfile support). That dependency
+        # is pinned by VENDORING the last compatible snapshots under .zf/extensions/.../main/ (the
+        # folder name the nested resolution looks up), which short-circuits the download:
+        #   .zf/extensions/ZeroFailed.Build.Common/main    = zerofailed/ZeroFailed.Build.Common@57ff8211cd75
+        #   .zf/extensions/ZeroFailed.DevOps.Common/main   = zerofailed/ZeroFailed.DevOps.Common@c4e5d102de
+        # Unpin (delete the vendored folders, restore GitRef = "main") only after moving to the
+        # ZeroFailed v2 module, which supports .zf/extensions.lock.json.
         Name = "ZeroFailed.Build.DotNet"
         GitRepository = "https://github.com/zerofailed/ZeroFailed.Build.DotNet"
-        GitRef = "main"
+        GitRef = "7fa91e302616accf3c65a2b95fff79f37fcc1ebb"
     }
 )
 
