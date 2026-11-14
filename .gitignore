@@ -355,7 +355,15 @@ MigrationBackup/
 _codeCoverage/
 _packages/
 *.sbom.*
-.zf/extensions/
+# Installed ZeroFailed extensions are build artefacts - EXCEPT the vendored dependency
+# snapshots that pin ZeroFailed.Build.Common/ZeroFailed.DevOps.Common (see .zf/config.ps1).
+.zf/extensions/*
+!.zf/extensions/ZeroFailed.Build.Common/
+.zf/extensions/ZeroFailed.Build.Common/*
+!.zf/extensions/ZeroFailed.Build.Common/main/
+!.zf/extensions/ZeroFailed.DevOps.Common/
+.zf/extensions/ZeroFailed.DevOps.Common/*
+!.zf/extensions/ZeroFailed.DevOps.Common/main/
 
 # Microsoft.Z3 packages downloaded by scripts/Install-Z3Package.ps1
 _z3-feed/*.nupkg
