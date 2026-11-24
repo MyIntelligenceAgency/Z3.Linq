@@ -104,6 +104,25 @@ internal sealed class ExpressionVisitor
         return finder.Found;
     }
 
+    /// <summary>
+    /// Reports whether a fold replaced a failed host evaluation by an exception closure call.
+    /// </summary>
+    /// <param name="expression">The expression to scan.</param>
+    /// <returns><see langword="true"/> when an <see cref="MiaPlaza.ExpressionUtils.ExceptionClosure"/> call appears anywhere in the tree.</returns>
+    /// <remarks>
+    /// The evaluator does not throw when a closed subtree fails on the host: it substitutes a call
+    /// that rethrows the exception when invoked. Such a node names only the interpreter's failure,
+    /// so it must not be translated in place of the expression the user wrote. See
+    /// <c>Theorem.TranslateConstraint</c>.
+    /// </remarks>
+    internal static bool MentionsExceptionClosure(Expression expression)
+    {
+        var finder = new ExceptionClosureFinder();
+        finder.Visit(expression);
+
+        return finder.Found;
+    }
+
     private Expr Visit(Expression expression)
     {
         // Largely table-driven mechanism, providing constructor lambdas to Visit* methods,
@@ -227,10 +246,11 @@ internal sealed class ExpressionVisitor
         // A numeric conversion the compiler inserted, or the caller wrote, means one of three
         // things in Z3, and which one depends on the sorts involved rather than on the CLR
         // types: nothing at all when both types map to the same sort (short to int, int to
-        // long, float to double, a cast that only narrows); integer-to-real when the operand is
-        // an integer and the target a real (int to double, int to decimal); real-to-integer the
-        // other way round. The target sort comes from the same mapping the symbols are declared
-        // with, so a conversion can never disagree with a symbol about what a type is.
+        // long, float to double), except that a cast narrowing one integer type to another
+        // wraps; integer-to-real when the operand is an integer and the target a real (int to
+        // double, int to decimal); real-to-integer the other way round. The target sort comes
+        // from the same mapping the symbols are declared with, so a conversion can never
+        // disagree with a symbol about what a type is.
         //
         // This used to be a switch on the target type alone, which assumed the operand sort from
         // it - int-to-real for every conversion to double, real-to-int for every conversion to
@@ -241,9 +261,21 @@ internal sealed class ExpressionVisitor
 
         if (targetSort is not null)
         {
+            // A conversion that calls an operator method runs C# the visitor cannot see into, so
+            // translating it from the sorts alone would drop whatever the operator does. Decimal's
+            // built-in conversions are operator methods on decimal too, and are the numeric
+            // conversions translated here; any other operator is refused.
+            if (expression.Method is { } method && method.DeclaringType != typeof(decimal))
+            {
+                throw new NotSupportedException(
+                    $"The conversion '{expression}' calls the user-defined operator {method.DeclaringType}.{method.Name}, which cannot be translated: only built-in numeric conversions are supported.");
+            }
+
             if (inner.Sort.Equals(targetSort))
             {
-                return inner;
+                return inner is IntExpr intInner
+                    ? WrapIntoRange(intInner, expression.Operand.Type, expression.Type)
+                    : inner;
             }
 
             if (inner.IsInt && targetSort is RealSort)
@@ -253,11 +285,99 @@ internal sealed class ExpressionVisitor
 
             if (inner.IsReal && targetSort is IntSort)
             {
-                return this.context.MkReal2Int((RealExpr)inner);
+                return TruncateTowardZero((RealExpr)inner);
+            }
+
+            // Between the two bit-vector widths, uint and ulong. Both are unsigned, so widening
+            // zero-extends, and an explicit narrowing cast keeps the low bits, as an unchecked C#
+            // cast does.
+            if (inner is BitVecExpr bvInner && targetSort is BitVecSort bvTarget)
+            {
+                return bvTarget.Size > bvInner.SortSize
+                    ? this.context.MkZeroExt(bvTarget.Size - bvInner.SortSize, bvInner)
+                    : this.context.MkExtract(bvTarget.Size - 1, 0, bvInner);
             }
         }
 
         throw new NotImplementedException($"Cast '{expression.Operand} ({expression.Operand.Type})' to {expression.Type}");
+    }
+
+    /// <summary>
+    /// Converts a real to an integer by truncating toward zero, as a C# conversion from
+    /// <c>double</c>, <c>float</c> or <c>decimal</c> to an integer type does.
+    /// </summary>
+    /// <param name="value">The real-sorted operand.</param>
+    /// <returns>The integer part of <paramref name="value"/>.</returns>
+    /// <remarks>
+    /// Z3's real-to-integer conversion is a floor, which agrees with C# only for a non-negative
+    /// operand: the floor of -2.5 is -3, but <c>(int)-2.5</c> is -2. A negative operand is
+    /// negated, floored and negated back, which is its ceiling.
+    /// </remarks>
+    private Expr TruncateTowardZero(RealExpr value)
+    {
+        RealExpr zero = this.context.MkReal(0);
+
+        return this.context.MkITE(
+            this.context.MkGe(value, zero),
+            this.context.MkReal2Int(value),
+            this.context.MkUnaryMinus(this.context.MkReal2Int((RealExpr)this.context.MkUnaryMinus(value))));
+    }
+
+    /// <summary>
+    /// Wraps an integer-sorted value into the range of the conversion's target type, as an
+    /// unchecked C# conversion between integer types does.
+    /// </summary>
+    /// <param name="value">The translated operand.</param>
+    /// <param name="from">The operand's CLR type.</param>
+    /// <param name="to">The conversion's target CLR type.</param>
+    /// <returns><paramref name="value"/> unchanged for a widening conversion; otherwise the value
+    /// wrapped into the target's range.</returns>
+    /// <remarks>
+    /// Every integer CLR type except <c>uint</c> and <c>ulong</c> is an unbounded integer in Z3,
+    /// so a narrowing cast such as <c>(int)</c> of a <c>long</c> changes nothing about the sort,
+    /// but C# keeps only the low bits: <c>(int)4294967295L</c> is -1. With a target range of
+    /// size <c>n</c> starting at <c>low</c>, the wrapped value is
+    /// <c>((value - low) mod n) + low</c>. Z3's <c>mod</c> by a positive constant is never
+    /// negative, so this covers signed and unsigned targets and negative operands alike. A
+    /// <c>checked</c> conversion is a different node type, which is not translated.
+    /// </remarks>
+    private Expr WrapIntoRange(IntExpr value, Type from, Type to)
+    {
+        // A long target holds every integer source, and its range has no size that fits in a long.
+        if (IntegerRange(to) is not (long low, long high) || (low == long.MinValue && high == long.MaxValue))
+        {
+            return value;
+        }
+
+        if (IntegerRange(from) is (long fromLow, long fromHigh) && fromLow >= low && fromHigh <= high)
+        {
+            return value;
+        }
+
+        IntExpr size = this.context.MkInt(high - low + 1);
+
+        if (low == 0)
+        {
+            return this.context.MkMod(value, size);
+        }
+
+        IntExpr lowExpr = this.context.MkInt(low);
+        IntExpr shifted = (IntExpr)this.context.MkSub(value, lowExpr);
+
+        return this.context.MkAdd(this.context.MkMod(shifted, size), lowExpr);
+    }
+
+    /// <summary>
+    /// The range of an integer CLR type that travels through Z3 as an integer, or
+    /// <see langword="null"/> for any other type.
+    /// </summary>
+    /// <param name="type">The CLR type; an enum gives its underlying type's range.</param>
+    /// <returns>The inclusive range, or <see langword="null"/>.</returns>
+    private static (long Low, long High)? IntegerRange(Type type)
+    {
+        return type == typeof(char)
+            ? (char.MinValue, char.MaxValue)
+            : Type.GetTypeCode(type) is TypeCode.DateTime ? null : Theorem.GetBounds(Type.GetTypeCode(type));
     }
 
     /// <summary>
@@ -488,11 +608,27 @@ internal sealed class ExpressionVisitor
     /// handles first - but a constant does not: <c>r.A + 1</c> on a 4-bit register mixes a
     /// bit-vector with an integer literal, and the literal is read as a width-matched bit pattern.
     /// See <see cref="ToBitVector"/>.
+    /// <para>
+    /// A <c>checked</c> operator on bit-vectors is refused. The bit-vector form wraps, so a
+    /// translation would return a wrapped model for a predicate that C# evaluates by throwing
+    /// <see cref="OverflowException"/>, which is a solution the caller could not have got by
+    /// running the predicate.
+    /// </para>
     /// </remarks>
     private Expr VisitArithmetic(BinaryExpression expression, Func<Context, ArithExpr, ArithExpr, ArithExpr> arith, Func<Context, BitVecExpr, BitVecExpr, BitVecExpr> bv)
     {
         Expr left = Visit(expression.Left);
         Expr right = Visit(expression.Right);
+
+        // The upstream guard, on the fork's switch: a literal arm is refused too, since the
+        // bit-vector it is read into wraps the same way a bit-vector operand would.
+        bool isChecked = expression.NodeType is ExpressionType.AddChecked or ExpressionType.SubtractChecked or ExpressionType.MultiplyChecked;
+
+        if (isChecked && (left is BitVecExpr || right is BitVecExpr))
+        {
+            throw new NotSupportedException(
+                $"A checked '{expression.NodeType}' on bit-vector (uint/ulong) symbols is not supported: bit-vector arithmetic wraps, and overflow checking is not translated. Remove the checked context to solve with wrapping arithmetic.");
+        }
 
         return (left, right) switch
         {
@@ -601,6 +737,13 @@ internal sealed class ExpressionVisitor
     /// C# types the shift amount as <c>int</c>, so the right operand translates to an integer and
     /// is converted to a bit-vector of the value's width before the shift. Only a bit-vector value
     /// can be shifted; Z3's integer sort has no shift.
+    /// <para>
+    /// C# uses only the low bits of the count: five for a <c>uint</c>, six for a <c>ulong</c>, so
+    /// <c>x &lt;&lt; 32</c> on a <c>uint</c> is <c>x</c>, and a negative count shifts by its low
+    /// bits too. Z3 shifts by the whole count, and anything at or beyond the width gives 0, so the
+    /// count is masked with the width minus one before the shift. The conversion to a bit-vector
+    /// is modulo 2^width, so a negative count reaches the mask in two's complement, as it does in C#.
+    /// </para>
     /// </remarks>
     private Expr VisitShift(BinaryExpression expression, string op, Func<Context, BitVecExpr, BitVecExpr, BitVecExpr> bvOp)
     {
@@ -613,8 +756,9 @@ internal sealed class ExpressionVisitor
         }
 
         BitVecExpr bvAmount = amount as BitVecExpr ?? this.context.MkInt2BV(bvValue.SortSize, (IntExpr)amount);
+        BitVecExpr maskedAmount = this.context.MkBVAND(bvAmount, this.context.MkBV(bvValue.SortSize - 1, bvValue.SortSize));
 
-        return bvOp(this.context, bvValue, bvAmount);
+        return bvOp(this.context, bvValue, maskedAmount);
     }
 
     /// <summary>
@@ -1175,42 +1319,32 @@ internal sealed class ExpressionVisitor
 
         var topMember = hierarchy.First();
 
-        if (topMember.Expression != this.param)
+        // A chain that starts at a constant or at a static member names a value, not a symbol, and
+        // is read now and translated as a constant. A captured variable is a field on the
+        // compiler's closure, which reaches here as a constant; a static field or property - such
+        // as DateTime.MaxValue, which is static readonly rather than const, so the compiler leaves
+        // it as a member access - has no instance at all. Each member is read from the value of
+        // the one before it, so a chain such as holder.In.Value works at any length.
+        if (topMember.Expression is ConstantExpression or null)
         {
-            // Two roots reduce the same way: a captured instance, which is a ConstantExpression,
-            // and a static member, whose root expression is null because there is no instance -
-            // DateTime.MaxValue is a static property, and a bound such as x.D > DateTime.MaxValue
-            // is written against it.
-            if (topMember.Expression is null || topMember.Expression is ConstantExpression)
+            object? value = (topMember.Expression as ConstantExpression)?.Value;
+
+            foreach (MemberExpression link in hierarchy)
             {
-                // We only ever get here if SimplifyLambda is set to false, otherwise partial evaluation does it earlier
-                var target = (topMember.Expression as ConstantExpression)?.Value;
-                var hierarchyIdx = 0;
-                object? val = target;
-
-                while (hierarchyIdx < hierarchy.Count)
+                if (value is null && link.Expression is not null)
                 {
-                    var currentMember = hierarchy[hierarchyIdx].Member;
-
-                    // Each level is read off the previous level's value, not off the constant: a
-                    // captured local can be nested more than one closure deep. Roslyn gives a loop
-                    // body its own display class inside the method's, so a lambda that captures
-                    // both a method parameter and a loop variable reaches its outer value through
-                    // two fields - and reading every level off the constant fails on the second
-                    // with "field ... is not a field on the target object". A property chain on a
-                    // captured instance, obj.Limit.Value, has the same shape.
-                    val = currentMember switch
-                    {
-                        PropertyInfo property => property.GetValue(val),
-                        FieldInfo field => field.GetValue(val),
-                        _ => throw new NotSupportedException($"Unsupported constant {topMember.Expression} ."),
-                    };
-
-                    hierarchyIdx++;
+                    throw new NotSupportedException($"Could not reduce '{member}': '{link.Expression}' is null.");
                 }
 
-                return VisitConstantValue(val ?? throw new NotSupportedException($"Could not reduce expression {topMember.Expression}"));
+                value = link.Member switch
+                {
+                    PropertyInfo property => property.GetValue(value),
+                    FieldInfo field => field.GetValue(value),
+                    _ => throw new NotSupportedException($"Unsupported member '{link.Member.Name}' in '{member}'."),
+                };
             }
+
+            return VisitConstantValue(value ?? throw new NotSupportedException($"Could not reduce '{member}': its value is null."));
         }
 
         // Only members we allow currently are direct accesses to the theorem's variables
@@ -1271,6 +1405,19 @@ internal sealed class ExpressionVisitor
         protected override Expression VisitMethodCall(MethodCallExpression node)
         {
             this.Found = this.Found || node.Method.DeclaringType == typeof(Z3Methods);
+
+            return this.Found ? node : base.VisitMethodCall(node);
+        }
+    }
+
+    /// <summary>Reports a fold's marker for an exception raised while evaluating on the host.</summary>
+    private sealed class ExceptionClosureFinder : ExprVisitor
+    {
+        internal bool Found { get; private set; }
+
+        protected override Expression VisitMethodCall(MethodCallExpression node)
+        {
+            this.Found = this.Found || node.Method.DeclaringType == typeof(MiaPlaza.ExpressionUtils.ExceptionClosure);
 
             return this.Found ? node : base.VisitMethodCall(node);
         }

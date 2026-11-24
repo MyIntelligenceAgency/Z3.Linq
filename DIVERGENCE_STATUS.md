@@ -1,143 +1,128 @@
 # Z3.Linq — divergence status (CoursIA fork vs endjin upstream)
 
-> État au 2026-09-26, dans le cadre de l'EPIC #16609 (réintégration avant divergence consommée, plan 4 phases).
-
-> **Erratum du 2026-10-04 (G1 de l'EPIC #14169, mesure #16050)** — les colonnes « PR endjin candidate » ci-dessous ont été re-mesurées PR par PR contre les diffs réels ; le verdict détaillé et les preuves vivent dans [`OVERLAP_G1.md`](OVERLAP_G1.md). Claims **réfutés** par la mesure : « #74 équivalent à notre PB » (×3, le diff #74 est test-only amont — le PB fork est fork-original sans candidate amont) · « #96 équivalent MaxSAT soft » (collision de titres) · « #88 pas dans le fork » (présent : a54ba1b + 5ad0c7b) · « #92 pas dans le fork » (capacité présente, seul le single-mapping manque) · « #91 équivalent record envs » (défaut anonymous vivant, Theorem.cs:1114-1130) · « #93 équivalent default-fill » (le template de taillage n'existe pas). Mal étiqueté : row 4 (5ad0c7b est la contrepartie #88, pas #84 — la capacité #84 vient de 6eab957). Également re-mesuré ce jour : ahead = **54** (les 3 commits de doc inclus), PRs endjin ouvertes = 45 (28 du périmètre G1 + 16 nouvelles, tri dans OVERLAP_G1.md §7).
+> Photographie au 2026-11-24, pour jsboige/CoursIA#19237. La ligne de fusion part de
+> `a0477d9c5944` et fusionne `endjin/main` `964f17704e38` ; les historiques restent
+> intacts (pas de rebase du fork).
 
 ## Résumé
 
-- **Fork** : `MyIntelligenceAgency/Z3.Linq` (`origin/main` = `fddd586`).
-- **Upstream** : `endjin/Z3.Linq` (`upstream/main` = `f937287`, PR #37).
-- **Ahead** : 51 commits (forkahead, 0 behind).
-- **PRs endjin ouvertes** : 28 (#74 → #112), aucune mergée depuis 2024-04-02.
+- **Fork** : `MyIntelligenceAgency/Z3.Linq`, base de cette branche `a0477d9c5944`.
+- **Upstream fusionné** : `endjin/Z3.Linq` `964f17704e38` (endjin#118).
+- **Derrière amont après fusion** : 0 commit ; les apports du fork restent des commits propres.
+- **Pile amont** : les PRs #44 à #110, puis #115 à #118 sont **MERGED** le 2026-10-28.
+  Les tableaux qui les présentaient comme ouvertes sont donc historiques.
+- **PRs amont ouvertes à cette date** : #120, #121, #122, #123, #124, #126, #127, #128
+  (8). #125 n'est pas une PR.
+- **Vérification de la fusion** : build Release net8.0/net10.0 sans avertissement ni erreur,
+  suite MSTest/MTP 471/471 ; contrôle amont pur 368/368. Les 19 carnets consommateurs sont
+  exécutés séparément avant la PR du fork, contre les artefacts `.deploy` reconstruits.
 
-## Cartographie ahead → PRs endjin candidates
+## Apports absorbés par amont
 
-| # | Commit fork | Résumé | PR endjin candidate | État endjin |
-|---|---|---|---|---|
-| 1 | `fc44dfa` | partial-eval cross-submission capture | endjin #43 | OPEN (notre PR) |
-| 2 | `6eab957` | DateTime Utc ticks round-trip | endjin #95 | OPEN |
-| 3 | `a89cfc6` | bound scalar symbols | endjin #98 | OPEN |
-| 4 | `5ad0c7b` | Int16 read-back | endjin #84 | OPEN |
-| 5 | `689c714` | List<T>/IList<T> indexers | endjin #90 | OPEN |
-| 6 | `420118b` | unconstrained indices default | endjin #93 | OPEN |
-| 7 | `62c277f` | CollectionHandling Constants mode | endjin #91 | OPEN |
-| 8 | `096a638` | nested int[][] array support | endjin #90 | OPEN (collections) |
-| 9 | `689cf3f` | fixed-width bit-vector theory | endjin #101 | OPEN (uint/ulong) |
-| 10 | `8bd75c0` | weighted MaxSAT soft constraints | endjin #96 | OPEN (bounded solve) |
-| 11 | `7b04ced` | Explain() + UNSAT-core | endjin #86 | OPEN |
-| 12 | `9ea81dc` | witness evaluation | endjin #108 | OPEN (Solver/Optimize dispatch) |
-| 13 | `6c67ce0` | Sum variadic | endjin #99 | OPEN (ternaries) |
-| 14 | `2d213b8` | Conditional ternary → MkITE | endjin #99 | OPEN |
-| 15 | `a54ba1b` | exact rational constants | endjin #99 | OPEN |
-| 16 | `2ea8fa0` | record environments via ctor | endjin #91 | OPEN (anonymous envs) |
-| 17 | `a593323` | configurable solver kind/logic/params | endjin #106 | OPEN (C# 14 idioms) |
-| 18 | `e057090` | Z3Context.Tactics pipeline | endjin #105 | OPEN (allocation cuts) |
-| 19 | `3ca4627` | weighted Pseudo-Boolean bands | endjin #74 | OPEN (drop dodge constraints) |
-| 20 | `0cfc210` | unweighted Pseudo-Boolean | endjin #74 | OPEN |
-| 21 | `b7ce44f` | README example + pb-bench harness | (docs) | n/a |
-| 22 | `c4fd415` | thread running value VisitMember | endjin #100 | OPEN (visitor internal) |
-| 23 | `b68438c` | strip probeAddresses banner | (security, local) | n/a |
+La resynchronisation adopte les formes amont qui couvrent le même comportement. Cette table
+remplace le statut « candidate » des anciennes lignes ; elle ne prétend pas que chaque implémentation
+est devenue byte-identique.
 
-## PRs endjin SANS contrepartie fork
+| Commit fork historique | Sujet | Contrepartie arrivée sur `endjin/main` | État |
+|---|---|---|---|
+| `6eab957` | DateTime UTC et ticks | #84, #95, #118 | absorbé |
+| `a89cfc6` | bornes des scalaires | #98, #102 | absorbé |
+| `5ad0c7b` | relecture Int16 | #84, #88 | absorbé |
+| `689c714`, `420118b`, `62c277f` | collections, tailles, mode Constants | #90, #93, avec apports fork conservés | absorbé + extensions locales |
+| `689cf3f` | bit-vectors de largeur fixe | #99, #101, avec attributs fork conservés | absorbé + extensions locales |
+| `7b04ced` | satisfaisabilité / explication | #86 | absorbé |
+| `9ea81dc` | lecture par témoin du modèle | endjin#127 reste OPEN ; surcharge fork conservée | suivi amont ouvert |
+| `2d213b8` | conditionnel ternaire | #99 | absorbé |
+| `c4fd415` | lecture des chaînes capturées | #118 | absorbé, adaptation ci-dessous |
+| `2ea8fa0` | environnements par constructeur | endjin#127 reste OPEN ; branche fork conservée | suivi amont ouvert |
+| `8bd75c0` | contraintes souples pondérées | endjin#128 reste OPEN | suivi amont ouvert |
+| `096a638` | collections imbriquées | endjin#123 reste OPEN | suivi amont ouvert |
 
-| PR | Titre | Statut |
+Les autres extensions du fork (logique et tactiques configurables, Pseudo-Boolean, `Sum`,
+`Rational`, benchmarks et outillage de déploiement) ne sont pas supprimées par cette fusion.
+Leur équivalence fonctionnelle ne se déduit pas d'un titre de PR amont.
+
+## Résolutions de fusion qui changent le contrat
+
+- **Chaîne capturée nulle.** Le fork plie chaque contrainte avant traduction. MiaPlaza
+  ExpressionUtils 1.3.1 ne lève pas toujours une évaluation hôte en échec : il insère un appel
+  `ExceptionClosure.Invoke`, qui ne porte plus la chaîne écrite. La fusion détecte ce marqueur
+  public et traduit alors la contrainte d'origine : le visiteur amont nomme le lien nul comme le
+  prévoit endjin#118, au lieu de produire un message d'interpréteur sans source.
+- **Records positionnels.** Contrairement au refus épinglé sur la pile du 2026-10-25, la branche
+  conserve `ConstructFromModel` : un type sans constructeur sans paramètre est construit par
+  correspondance des paramètres nommés. Le test amont a été retourné vers cette capacité et
+  `RecordEnvTheoryTests` reste vert. C'est un consommateur réel des carnets CoursIA, pas une
+  ligne à perdre dans la fusion ; endjin#127 porte le sujet amont.
+- **Template paresseux.** La lecture amont du modèle consulte le template sans l'aplatir au
+  préalable, pour ne pas remplacer une collection explicitement vide. Les trois appelants du
+  fork passent l'instance template ; la surcharge de réflexion `Solve(CancellationToken)` est
+  sélectionnée par signature, car la surcharge de témoin du fork rend le nom seul ambigu.
+- **Artefacts consommés.** `.deploy/Z3.Linq.dll` est publié en net10.0 (références
+  `System.Linq.Expressions/System.Runtime/System.Linq` 10.0.0.0), avec Microsoft.Z3 5.3.2.0
+  et son `libz3.dll` win-x64. `ExpressionUtils.dll` 1.3.1 reste byte-identique.
+
+## G4 — mesure des PRs fork #37, #38, #40 sur `964f177`
+
+Le défaut se mesure sur `endjin/main`, pas sur l'ancienne pile `b425802b`.
+
+| PR fork | Mesure sur la ligne fusionnée | Geste |
 |---|---|---|
-| #74 | Drop constraints dodging #51 | OPEN — équivalent à notre PB |
-| #86 | Report satisfiability separately | OPEN — équivalent Explain/UNSAT-core |
-| #88 | Make short and enum symbols work | OPEN — équivalent Int16 read-back ; bras élément `List<short>` mesuré cassé (2026-10-04, rapport posté) |
-| #90 | Give collections same sorts as scalars | OPEN — équivalent partiel |
-| #91 | Marshal anonymous environments | OPEN — équivalent record envs |
-| #92 | Numeric conversions by sort | OPEN — pas dans le fork |
-| #93 | Size collections from instance | OPEN — équivalent default-fill |
-| #94 | Generate XML documentation | OPEN — pas dans le fork |
-| #95 | DateTime as ticks | OPEN — équivalent Utc ticks |
-| #96 | Bounded solve + UNKNOWN | OPEN — équivalent MaxSAT soft |
-| #98 | Bound integer symbol to type range | OPEN — équivalent bound scalar |
-| #99 | Translate ternaries | OPEN — équivalent Conditional + exact rationals |
-| #100 | Visitor internal instance class | OPEN — refactor du VisitMember |
-| #101 | uint/ulong bit-vector | OPEN — équivalent bitvec theory |
-| #102 | byte/sbyte/ushort bounded | OPEN — extension |
-| #103 | Fix solve-limits defects | OPEN |
-| #104 | BenchmarkDotNet suite | OPEN — pas dans le fork |
-| #105 | Cut per-solve allocations | OPEN |
-| #106 | Modernise solve path C# 14 | OPEN — équivalent configurable solver |
-| #107 | Extract MemberClrType | OPEN |
-| #108 | Extract Assert for dispatch | OPEN — équivalent witness eval |
-| #109 | Merge scalar/element marshallers | OPEN |
-| #110 | Convert demos Spectre.Console | OPEN — pivot participation |
-| #111 | Add xUnit test project | OPEN — base PR de tests (grain P1) |
-| #112 | Port DateTime round-trip suite | OPEN — équivalent de notre #26 |
+| #37 ValueTuple | amont affecte les champs publics : le défaut de construction ValueTuple est absorbé | adopter amont ; aucun report du hunk fork |
+| #38 types anonymes | amont délègue la lecture au marshaller partagé : le défaut est absorbé | adopter amont ; aucun report du hunk fork |
+| #40 symbole `Rational` | `TheoremVariableTypeMappingAttribute` fournit la voie générique ; le support exact du fork reste local | aucune nouvelle PR symbole |
+| #40 constante d'un type mappé | `ExpressionVisitor.VisitConvert` utilise encore `Type.GetTypeCode(expression.Type)` sans le mapping utilisateur | défaut distinct à reproduire sur `964f177`, puis PR amont à sujet unique s'il est confirmé |
+| record positionnel | le fork conserve la construction par constructeur ; endjin#127 (OPEN) porte cette capacité et le témoin de modèle | pas de nouvelle PR amont dupliquée |
 
-## Plan d'action EPIC #16609
+Les tests utiles des trois PRs restent des actifs de couverture à porter séparément ; ils ne
+justifient pas de conserver les réimplémentations supplantées. Les contrats exacts et d'overflow
+de `Rational` doivent être prouvés à travers la voie générique avant toute substitution.
+La PR fork #43 conserve la matrice datée du 2026-10-25 : elle n'est ni fusionnée dans cette
+branche ni écrasée ici.
 
-### P0 — débloquer le pend ✅ (ce document)
+## PRs amont ouvertes au 2026-11-24
 
-> **État mesuré au 2026-10-04** (myia-po-2027) : la ligne ci-dessous est périmée — le
-> commentaire de reframe sur endjin#43 a bien été posté les 2026-09-17/18 (reframe
-> « dynamic assemblies » + design du test Roslyn + questions de ciblage en c.2 ; preuve
-> red/green du repro cross-submission en c.3). L'acceptance P0 « commentaire posté »
-> est remplie ; les questions de ciblage attendent la réponse d'Howard.
-
-- Cartographie des 51 commits fork → PRs endjin candidates
-- Aucun commentaire PR endjin posté (à faire en P1)
-
-### P1 — PR de tests contre `endjin/main`
-
-> **État mesuré au 2026-10-04** (myia-po-2027) :
-> - #111 (harnais, base `main`) et #112 (DateTime round-trip, empilée sur
->   `feature/datetime-ticks`) ouvertes — le livrable « PR amont ouverte » est tenu.
-> - « bound scalars » = **NO-OP** : `SymbolBoundsTests` existe déjà sur la branche
->   endjin#98 (notre suite fork en est le port, pas l'inverse — mesuré).
-> - **Mesuré sur #88** (short/enum) : le bras ÉLÉMENT de `List<short>` crashe à la
->   traduction (`InvalidCastException BitVecExpr→RealExpr`, `VisitConvert`) — brèche
->   héritée du bloc `arrRange` legacy (`Int16 → BitVecSort(16)`, vanilla 2024) qui
->   SURVIT au fix (identique sur la base #86). Repro sur
->   `tests/port-int16-roundtrip-88`, rapport posté sur endjin#88 (2026-10-04).
-> - Les branches de pile portent leur **propre harnais MSTest+Shouldly** (pas le
->   harnais xUnit de #111) : chaque port de suite s'adapte à leurs conventions
->   (`[TestClass]`, `Should.Throw`, Arrange/Act/Assert).
-
-- endjin #111 « xUnit test project » = base
-- Porter nos suites vertes (DateTime round-trip, bound scalars, etc.) sur `endjin/main`
-- Chaque suite rouge sur main vanilla = candidat test pour PR amont spécifique
-
-### P2 — branche d'intégration (participation)
-
-> **État mesuré au 2026-10-04** (myia-po-2027) : **LIVRÉ le 2026-09-21** — les lignes
-> ci-dessous décrivent du travail déjà fait. Branche
-> `integration/endjin-stack-20260921` (merge `3f799a5` + bench `a4e44e2`), rapport
-> publié sur endjin#110 (c. 2026-09-21T12:39Z, 5228 car.) : carte de conflits
-> complète (11 fichiers / 48 hunks, résolutions motivées), banc 43 tests
-> (12 pass / 31 fail, dominés par les extensions downstream — mécaniques à porter),
-> **2 findings actionnables amont** : (1) `DateTime.MaxValue/MinValue` statiques →
-> `NotSupportedException` au lieu d'`OverflowException` nommant le symbole (voie
-> partagée, candidat PR) ; (2) divergence sémantique bounds bit-vector (wrap mod 16
-> vs pas de témoin). Voir aussi `integration/howard-stack` (répétition de merge du
-> 17/09, rehearsal 10 fichiers). Ce document ne l'avait pas enregistré.
-
-- Merger le stack amont (28 PRs endjin) dans une branche d'intégration
-- Lancer nos suites, publier résultats sur endjin #110
-- Carte commits-fork × PRs-amont en conflit
-
-### P3 — rebaser à la consommation
-
-- Quand le stack amont merge : rebase des apports uniques
-- Supprimer nos versions locales des doublons (4 REDONDANT G1-bis #16070)
+| PR | Sujet | Base |
+|---|---|---|
+| #120 | exemples SAT/SMT by Example | `main` |
+| #121 | test `Distinct` inline | `test/theorem-smoke-gaps` |
+| #122 | capture d'une variable entre soumissions scripting | `main` |
+| #123 | collections imbriquées comme symboles | `test/cross-submission-capture` |
+| #124 | exemple Sudoku sur `int[][]` | `feature/nested-collection-symbols` |
+| #126 | banc de formes de collection/capture du fork | `feature/nested-collection-symbols` |
+| #127 | témoin de modèle et environnements par constructeur | `main` |
+| #128 | `SoftWhere`, MaxSAT pondéré | `main` |
 
 ## Anti-divergence (HARD)
 
-Aucun commit nouveau sur fichiers d'overlap (`Theorem.cs`, `ExpressionVisitor.cs`, `TheoremSolving.cs`) sans PR amont correspondante ouverte. Besoins propres CoursIA = cherry-pick de la ligne amont, jamais réimplémentation.
+Aucun commit nouveau sur fichiers d'overlap (`Theorem.cs`, `ExpressionVisitor.cs`,
+`TheoremSolving.cs`) sans mesure sur `endjin/main` et PR amont correspondante lorsque le défaut
+y vit encore. Besoins propres CoursIA = adoption/cherry-pick de la ligne amont quand elle couvre
+le comportement ; jamais de réimplémentation silencieuse d'un mécanisme amont.
+
+## Historique et documents de mesure
+
+- État initial au 2026-09-26, erratum au 2026-10-04 : [`OVERLAP_G1.md`](OVERLAP_G1.md).
+  Cet erratum réfutait notamment les équivalences de titre #74/Pseudo-Boolean et #96/MaxSAT,
+  et corrigeait la provenance DateTime/Int16. Les anciens comptes ahead/PRs ouvertes sont périmés.
+- P0 : la cartographie et le reframe de endjin#43 ont été publiés en septembre 2026.
+  endjin#43 est **CLOSED**, non mergée ; endjin#118 couvre la lecture des constantes capturées.
+- P1 : #111, #112, #113 et #114 sont **CLOSED**, non mergées. Les suites de la pile amont
+  utilisent MSTest/MTP + Shouldly ; les assertions ci-dessus ne se lisent pas comme des merges.
+- P2 : intégration historique `integration/endjin-stack-20260921` (merge `3f799a5`, banc
+  `a4e44e2`), rapportée sur endjin#110 le 2026-09-21. La pile est depuis arrivée sur `main`.
+- P3 : la présente branche fusionne au lieu de réécrire les apports uniques ; la suppression des
+  doublons reste conditionnée à une preuve comportementale, jamais à un rapprochement de titres.
 
 ## Non-goals
 
-- Merger/close les PRs d'Howard (ses reviews idg10) — nous validons, nous ne jugeons pas.
-- Réécrire nos 51 commits en bloc — découpe one-concern-per-PR.
+- Merger ou fermer les PRs d'Howard : la lane mesure et propose, elle ne juge pas à sa place.
+- Réécrire en bloc les commits du fork : une PR par sujet.
+- Déclarer les carnets validés sans exécution locale et sorties réelles.
 
 ## Liens
 
-- EPIC parent : #14169
-- G1 #16050 · G1-bis #16053 (PR #16070)
-- Amont : endjin/Z3.Linq#29, #43, #110, #111
-- Epic #1206
-- Issue CoursIA : #16609
+- EPIC parent : #14169 ; issue de resynchronisation : jsboige/CoursIA#19237.
+- G1 #16050 · G1-bis #16053 (PR #16070) · Epic #1206 · issue historique #16609.
+- Amont : #43, #110, #114, #118 ; suivi ouvert : #120 à #124, #126 à #128.
+- Matrice G4 datée : PR fork #43 (`docs/g4-divergence-20261025`).
