@@ -14,8 +14,9 @@
 - **PRs amont ouvertes à cette date** : #120, #121, #122, #123, #124, #126, #127, #128
   (8). #125 n'est pas une PR.
 - **Vérification de la fusion** : build Release net8.0/net10.0 sans avertissement ni erreur,
-  suite MSTest/MTP 471/471 ; contrôle amont pur 368/368. Les 19 carnets consommateurs sont
-  exécutés séparément avant la PR du fork, contre les artefacts `.deploy` reconstruits.
+  suite MSTest/MTP 471/471 ; contrôle amont pur 368/368. Les 20 carnets consommateurs ont été
+  exécutés sur des copies isolées contre les artefacts `.deploy` reconstruits : 235/235 cellules
+  code, aucun compteur nul ni erreur d'exécution, sources inchangées.
 
 ## Apports absorbés par amont
 
@@ -71,7 +72,7 @@ Le défaut se mesure sur `endjin/main`, pas sur l'ancienne pile `b425802b`.
 | #37 ValueTuple | amont affecte les champs publics : le défaut de construction ValueTuple est absorbé | adopter amont ; aucun report du hunk fork |
 | #38 types anonymes | amont délègue la lecture au marshaller partagé : le défaut est absorbé | adopter amont ; aucun report du hunk fork |
 | #40 symbole `Rational` | `TheoremVariableTypeMappingAttribute` fournit la voie générique ; le support exact du fork reste local | aucune nouvelle PR symbole |
-| #40 constante d'un type mappé | `ExpressionVisitor.VisitConvert` utilise encore `Type.GetTypeCode(expression.Type)` sans le mapping utilisateur | défaut distinct à reproduire sur `964f177`, puis PR amont à sujet unique s'il est confirmé |
+| #40 constante d'un type mappé | test rouge sur `964f177` : `(ExactReal)2.5` lève `NotImplementedException` dans `VisitConvert` ; endjin#114 est CLOSED sans merge | correction atomique proposée dans **endjin#129** ; 4 tests ciblés et 372/372 sur net10.0, net8.0 restant à mesurer |
 | record positionnel | le fork conserve la construction par constructeur ; endjin#127 (OPEN) porte cette capacité et le témoin de modèle | pas de nouvelle PR amont dupliquée |
 
 Les tests utiles des trois PRs restent des actifs de couverture à porter séparément ; ils ne
