@@ -72,8 +72,15 @@ Le défaut se mesure sur `endjin/main`, pas sur l'ancienne pile `b425802b`.
 | #37 ValueTuple | amont affecte les champs publics : le défaut de construction ValueTuple est absorbé | adopter amont ; aucun report du hunk fork |
 | #38 types anonymes | amont délègue la lecture au marshaller partagé : le défaut est absorbé | adopter amont ; aucun report du hunk fork |
 | #40 symbole `Rational` | `TheoremVariableTypeMappingAttribute` fournit la voie générique ; le support exact du fork reste local | aucune nouvelle PR symbole |
-| #40 constante d'un type mappé | test rouge sur `964f177` : `(ExactReal)2.5` lève `NotImplementedException` dans `VisitConvert` ; endjin#114 est CLOSED sans merge | correction atomique proposée dans **endjin#129** ; 4 tests ciblés et 372/372 sur net10.0, net8.0 restant à mesurer |
+| #40 constante d'un type mappé | test rouge sur `964f177` : `(ExactReal)2.5` lève `NotImplementedException` dans `VisitConvert` ; endjin#114 est CLOSED sans merge | correction atomique **endjin#129** (OPEN), cherry-pickée ici ; le fork y ajoute une garde de son propre pré-pli `PartialEval` — sans elle la pile resynchronisée reste à 475/2/473 |
 | record positionnel | le fork conserve la construction par constructeur ; endjin#127 (OPEN) porte cette capacité et le témoin de modèle | pas de nouvelle PR amont dupliquée |
+
+Mesures de cette branche (2026-11-25), sur `5071d6f` avec `endjin#129` cherry-pické : sans garde,
+475 tests / 2 échecs / 473 réussites ; avec la garde `ExpressionVisitor.MentionsMappedTypeConversion`,
+475/475 sur net10.0 et 475/475 sur net8.0. La jambe net8.0 est mesurée sur un échafaudage
+multi-cible de sonde, non commité : l'amont est net10.0 par construction
+(`solutions/Directory.Build.props`), que `Z3.Linq.csproj` du fork remplace par `net8.0;net10.0`
+tandis que le projet de tests hérite de l'amont.
 
 Les tests utiles des trois PRs restent des actifs de couverture à porter séparément ; ils ne
 justifient pas de conserver les réimplémentations supplantées. Les contrats exacts et d'overflow
@@ -81,7 +88,7 @@ de `Rational` doivent être prouvés à travers la voie générique avant toute 
 La PR fork #43 conserve la matrice datée du 2026-10-25 : elle n'est ni fusionnée dans cette
 branche ni écrasée ici.
 
-## PRs amont ouvertes au 2026-11-24
+## PRs amont ouvertes au 2026-11-25
 
 | PR | Sujet | Base |
 |---|---|---|
@@ -93,6 +100,7 @@ branche ni écrasée ici.
 | #126 | banc de formes de collection/capture du fork | `feature/nested-collection-symbols` |
 | #127 | témoin de modèle et environnements par constructeur | `main` |
 | #128 | `SoftWhere`, MaxSAT pondéré | `main` |
+| #129 | conversion vers un type mappé | `main` |
 
 ## Anti-divergence (HARD)
 
@@ -125,5 +133,5 @@ le comportement ; jamais de réimplémentation silencieuse d'un mécanisme amont
 
 - EPIC parent : #14169 ; issue de resynchronisation : jsboige/CoursIA#19237.
 - G1 #16050 · G1-bis #16053 (PR #16070) · Epic #1206 · issue historique #16609.
-- Amont : #43, #110, #114, #118 ; suivi ouvert : #120 à #124, #126 à #128.
+- Amont : #43, #110, #114, #118 ; suivi ouvert : #120 à #124, #126 à #129.
 - Matrice G4 datée : PR fork #43 (`docs/g4-divergence-20261025`).
