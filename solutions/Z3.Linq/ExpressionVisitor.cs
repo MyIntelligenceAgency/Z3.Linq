@@ -123,6 +123,28 @@ internal sealed class ExpressionVisitor
         return finder.Found;
     }
 
+    /// <summary>
+    /// Reports whether an expression converts a value to a type that carries a
+    /// <see cref="TheoremVariableTypeMappingAttribute"/>.
+    /// </summary>
+    /// <param name="expression">The expression to scan.</param>
+    /// <returns><see langword="true"/> when a conversion to a mapped type appears anywhere in the tree.</returns>
+    /// <remarks>
+    /// A cast such as <c>(ExactReal)2.5</c> is an operator call on a constant, so a host evaluation
+    /// folds it into a constant of the mapped type. The visitor then receives a value it refuses,
+    /// while the conversion node itself carries what it needs to select the sort: translated, the
+    /// cast is the identity construction the mapping promises, and an arbitrary instance of the
+    /// mapped type stays unsupported. A constraint that mentions such a conversion is therefore
+    /// translated without the fold. See <c>Theorem.TranslateConstraint</c> and MappedTypeConversionTests.
+    /// </remarks>
+    internal static bool MentionsMappedTypeConversion(Expression expression)
+    {
+        var finder = new MappedTypeConversionFinder();
+        finder.Visit(expression);
+
+        return finder.Found;
+    }
+
     private Expr Visit(Expression expression)
     {
         // Largely table-driven mechanism, providing constructor lambdas to Visit* methods,
@@ -1434,6 +1456,21 @@ internal sealed class ExpressionVisitor
             this.Found = this.Found || node.Method.DeclaringType == typeof(MiaPlaza.ExpressionUtils.ExceptionClosure);
 
             return this.Found ? node : base.VisitMethodCall(node);
+        }
+    }
+
+    /// <summary>Reports whether a conversion targets a type mapped by a variable type mapping.</summary>
+    private sealed class MappedTypeConversionFinder : ExprVisitor
+    {
+        internal bool Found { get; private set; }
+
+        protected override Expression VisitUnary(UnaryExpression node)
+        {
+            this.Found = this.Found
+                || (node.NodeType is ExpressionType.Convert or ExpressionType.ConvertChecked
+                    && Theorem.MappedType(node.Type) != node.Type);
+
+            return this.Found ? node : base.VisitUnary(node);
         }
     }
 }

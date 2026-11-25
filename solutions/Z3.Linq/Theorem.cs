@@ -567,10 +567,15 @@ public class Theorem
     /// subtree by an exception-closure call. The artificial node no longer carries the member chain
     /// the user wrote, so it is not translated; the original constraint goes through the visitor,
     /// whose captured-member path names the null link. See ConstantMemberTests.
+    /// A conversion to a mapped type is a second shape the fold must not touch: evaluated on the
+    /// host, <c>(ExactReal)2.5</c> becomes a constant of the mapped type, which the visitor refuses,
+    /// whereas the conversion node itself translates to the sort the mapping declares. See
+    /// <c>ExpressionVisitor.MentionsMappedTypeConversion</c> and MappedTypeConversionTests.
     /// </remarks>
     private static Expr TranslateConstraint(Context context, Environment environment, LambdaExpression constraint)
     {
         Expression body = ExpressionVisitor.MentionsTranslationMarker(constraint.Body)
+            || ExpressionVisitor.MentionsMappedTypeConversion(constraint.Body)
             ? constraint.Body
             : PartialEvaluator.PartialEval(constraint, ExpressionInterpreter.Instance).Body;
 
