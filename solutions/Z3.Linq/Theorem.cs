@@ -7,7 +7,6 @@ using MiaPlaza.ExpressionUtils.Evaluating;
 
 using System;
 using System.Collections;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
@@ -564,12 +563,24 @@ public class Theorem
     /// mentions one skips the fold entirely; the visitor folds the closed element reads of such a
     /// constraint itself. PartialEval 1.3 accepts only a LambdaExpression, so the constraint is
     /// passed as the lambda it already is and its folded Body taken back out.
+    /// A host evaluation that fails does not throw out of the fold: the evaluator replaces that
+    /// subtree by an exception-closure call. The artificial node no longer carries the member chain
+    /// the user wrote, so it is not translated; the original constraint goes through the visitor,
+    /// whose captured-member path names the null link. See ConstantMemberTests.
     /// </remarks>
     private static Expr TranslateConstraint(Context context, Environment environment, LambdaExpression constraint)
     {
         Expression body = ExpressionVisitor.MentionsTranslationMarker(constraint.Body)
             ? constraint.Body
             : PartialEvaluator.PartialEval(constraint, ExpressionInterpreter.Instance).Body;
+
+        if (ExpressionVisitor.MentionsExceptionClosure(body))
+        {
+            // A failed host fold is not translated: refusing the original constraint lets
+            // VisitMember report the null link by name. ExceptionClosure.Invoke is an artificial
+            // node carrying only the interpreter's exception, and erases that source expression.
+            return ExpressionVisitor.Translate(context, environment, constraint.Body, constraint.Parameters[0]);
+        }
 
         return ExpressionVisitor.Translate(context, environment, body, constraint.Parameters[0]);
     }
@@ -722,8 +733,11 @@ public class Theorem
     /// <remarks>
     /// A <see cref="DateTime"/> is its ticks (#83), so its range is
     /// <see cref="DateTime.MinValue"/> to <see cref="DateTime.MaxValue"/> in ticks.
+    /// <para>
+    /// <see cref="ExpressionVisitor"/> uses the same ranges to wrap a narrowing integer conversion.
+    /// </para>
     /// </remarks>
-    private static (long Low, long High)? GetBounds(TypeCode typeCode)
+    internal static (long Low, long High)? GetBounds(TypeCode typeCode)
     {
         return typeCode switch
         {
@@ -771,13 +785,23 @@ public class Theorem
     /// solves.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// The environment builder, the bounds asserter and the marshaller each ask this of the same
     /// member types on every solve, and the answer is fixed for the life of the type. Caching it
     /// turns the common no-mapping case - the great majority of members - from a reflection call
-    /// and an array allocation per member per solve into a dictionary lookup. A type with no
-    /// mapping caches a null, so absence is cached as cheaply as presence.
+    /// and an array allocation per member per solve into a table lookup. A type with no mapping
+    /// caches an entry holding null, so absence is cached as cheaply as presence.
+    /// </para>
+    /// <para>
+    /// This cache and the member caches below are <see cref="ConditionalWeakTable{TKey, TValue}"/>s
+    /// rather than dictionaries, because they live as long as the library does. A dictionary would
+    /// hold every type it had seen, so a type from a collectible assembly - a plugin the host
+    /// reloads, a script it compiles - would keep that assembly loaded for good. A weak table drops
+    /// its entry when nothing else holds the type, and an entry's value referring back to its key,
+    /// as a <see cref="PropertyInfo"/> does through its declaring type, does not keep the key alive.
+    /// </para>
     /// </remarks>
-    private static readonly ConcurrentDictionary<Type, TheoremVariableTypeMappingAttribute?> TypeMappings = new();
+    private static readonly ConditionalWeakTable<Type, TypeMappingEntry> TypeMappings = new();
 
     /// <summary>
     /// The <see cref="TheoremVariableTypeMappingAttribute"/> declared on <paramref name="type"/>,
@@ -787,10 +811,17 @@ public class Theorem
     /// <returns>The mapping attribute, or <see langword="null"/>.</returns>
     private static TheoremVariableTypeMappingAttribute? GetTypeMapping(Type type)
     {
-        return TypeMappings.GetOrAdd(
+        return TypeMappings.GetValue(
             type,
-            static t => t.GetCustomAttributes<TheoremVariableTypeMappingAttribute>(false).SingleOrDefault());
+            static t => new TypeMappingEntry(t.GetCustomAttributes<TheoremVariableTypeMappingAttribute>(false).SingleOrDefault())).Mapping;
     }
+
+    /// <summary>
+    /// A cached type mapping, or its absence: a <see cref="ConditionalWeakTable{TKey, TValue}"/>
+    /// value cannot be null, so a type with no mapping needs an entry to say so.
+    /// </summary>
+    /// <param name="Mapping">The type's mapping attribute, or <see langword="null"/>.</param>
+    private sealed record TypeMappingEntry(TheoremVariableTypeMappingAttribute? Mapping);
 
     /// <summary>
     /// The public instance properties of a type, cached across solves.
@@ -799,25 +830,26 @@ public class Theorem
     /// <see cref="Type.GetProperties(BindingFlags)"/> hands back a fresh array on every call, so
     /// the environment builder allocated one per type on every solve to walk the same fixed set of
     /// members. The cached array is only ever read, never mutated, so sharing one instance is safe.
+    /// Weak for the same reason as <see cref="TypeMappings"/>.
     /// </remarks>
-    private static readonly ConcurrentDictionary<Type, PropertyInfo[]> PublicInstanceProperties = new();
+    private static readonly ConditionalWeakTable<Type, PropertyInfo[]> PublicInstanceProperties = new();
 
     /// <summary>
-    /// The public instance fields of a type, cached across solves, for the same reason as
+    /// The public instance fields of a type, cached across solves, for the same reasons as
     /// <see cref="PublicInstanceProperties"/>.
     /// </summary>
-    private static readonly ConcurrentDictionary<Type, FieldInfo[]> PublicInstanceFields = new();
+    private static readonly ConditionalWeakTable<Type, FieldInfo[]> PublicInstanceFields = new();
 
     /// <summary>Gets the cached public instance properties of <paramref name="type"/>.</summary>
     private static PropertyInfo[] GetPublicInstanceProperties(Type type)
     {
-        return PublicInstanceProperties.GetOrAdd(type, static t => t.GetProperties(BindingFlags.Public | BindingFlags.Instance));
+        return PublicInstanceProperties.GetValue(type, static t => t.GetProperties(BindingFlags.Public | BindingFlags.Instance));
     }
 
     /// <summary>Gets the cached public instance fields of <paramref name="type"/>.</summary>
     private static FieldInfo[] GetPublicInstanceFields(Type type)
     {
-        return PublicInstanceFields.GetOrAdd(type, static t => t.GetFields(BindingFlags.Public | BindingFlags.Instance));
+        return PublicInstanceFields.GetValue(type, static t => t.GetFields(BindingFlags.Public | BindingFlags.Instance));
     }
 
     /// <summary>
@@ -1064,7 +1096,7 @@ public class Theorem
         return toReturn;
     }
 
-    private static object ConvertZ3Expression(object destinationObject, Context context, Model model, Environment subEnv, MemberInfo parameter, object? templateValue)
+    private static object ConvertZ3Expression(object destinationObject, Context context, Model model, Environment subEnv, MemberInfo parameter, object? template)
     {
         // Normalize types when facing Z3. Theorem variable type mappings allow for strong
         // typing within the theorem, while underlying variable representations are Z3-
@@ -1080,7 +1112,13 @@ public class Theorem
         {
             if (IsCollection(parameterType))
             {
-                object? existingMember = templateValue ?? GetMemberValue(parameter, destinationObject);
+                // Only a collection reads its member off the template, and only for the length:
+                // a solution never resizes a collection, so the length comes from the template's
+                // collection or, failing that, from the one the destination instance initialised.
+                // A scalar member's getter is never read: its value on the template is of no use,
+                // and reading it would run a getter that may throw or have side effects. This is
+                // the upstream form of #116, which the fork's per-member eager read bypassed.
+                object? existingMember = GetMemberValue(parameter, template) ?? GetMemberValue(parameter, destinationObject);
 
                 // Constants mode: the collection has no array constant at all, so there is nothing
                 // to Select. Each element the constraints named carries a constant of its own in
@@ -1091,7 +1129,10 @@ public class Theorem
             }
             else
             {
-                value = GetSolution(parameterType, context, model, subEnv, templateValue);
+                // A nested environment descends into the member's sub-environment; the template
+                // member supplies the nested instance's own collection lengths. Reading it here
+                // is what the scalar branch above deliberately does not do.
+                value = GetSolution(parameterType, context, model, subEnv, GetMemberValue(parameter, template));
             }
         }
         else
@@ -1582,7 +1623,7 @@ public class Theorem
                 //
                 // The instance here is uninitialised, so a collection on it has no length of its own;
                 // the one on the template - the instance passed to NewTheorem - supplies it. See #78.
-                field.SetValue(result, ConvertZ3Expression(result, context, model, subEnv, parameter, GetMemberValue(parameter, template)));
+                field.SetValue(result, ConvertZ3Expression(result, context, model, subEnv, parameter, template));
             }
 
             return result;
@@ -1604,7 +1645,7 @@ public class Theorem
                 var subEnv = environment.Properties[parameter];
 
                 // Evaluation of the values through the handle in the environment bindings.
-                object value = ConvertZ3Expression(result, context, model, subEnv, parameter, GetMemberValue(parameter, template));
+                object value = ConvertZ3Expression(result, context, model, subEnv, parameter, template);
 
                 switch (parameter)
                 {
@@ -1671,7 +1712,7 @@ public class Theorem
                 model,
                 environment.Properties[member],
                 member,
-                GetMemberValue(member, template));
+                template);
         }
 
         return ctor.Invoke(arguments);
