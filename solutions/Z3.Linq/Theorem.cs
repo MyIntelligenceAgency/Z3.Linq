@@ -567,10 +567,15 @@ public class Theorem
     /// subtree by an exception-closure call. The artificial node no longer carries the member chain
     /// the user wrote, so it is not translated; the original constraint goes through the visitor,
     /// whose captured-member path names the null link. See ConstantMemberTests.
+    /// A conversion to a mapped type is a second shape the fold must not touch: evaluated on the
+    /// host, <c>(ExactReal)2.5</c> becomes a constant of the mapped type, which the visitor refuses,
+    /// whereas the conversion node itself translates to the sort the mapping declares. See
+    /// <c>ExpressionVisitor.MentionsMappedTypeConversion</c> and MappedTypeConversionTests.
     /// </remarks>
     private static Expr TranslateConstraint(Context context, Environment environment, LambdaExpression constraint)
     {
         Expression body = ExpressionVisitor.MentionsTranslationMarker(constraint.Body)
+            || ExpressionVisitor.MentionsMappedTypeConversion(constraint.Body)
             ? constraint.Body
             : PartialEvaluator.PartialEval(constraint, ExpressionInterpreter.Instance).Body;
 
@@ -760,8 +765,23 @@ public class Theorem
     /// <returns>The type the symbol is declared and read as.</returns>
     private static Type SymbolType(MemberInfo member)
     {
-        Type type = MemberClrType(member);
+        return MappedType(MemberClrType(member));
+    }
 
+    /// <summary>
+    /// The type a CLR type stands for in a theorem: itself, or the type a
+    /// <see cref="TheoremVariableTypeMappingAttribute"/> on it maps it to.
+    /// </summary>
+    /// <param name="type">A declared CLR type, of a member or of a converted constant.</param>
+    /// <returns>The type the symbol is declared and read as.</returns>
+    /// <remarks>
+    /// The environment builder, the bounds asserter, the marshaller and the expression visitor all
+    /// have to agree on this answer. They asked the mapping separately and the visitor did not ask
+    /// at all, so a mapped type was a real symbol in the environment and an untranslatable
+    /// constant in the predicate.
+    /// </remarks>
+    internal static Type MappedType(Type type)
+    {
         return GetTypeMapping(type)?.RegularType ?? type;
     }
 
@@ -1045,9 +1065,7 @@ public class Theorem
     {
         var toReturn = new Environment();
 
-        var parameterType = MemberClrType(parameter);
-
-        parameterType = GetTypeMapping(parameterType)?.RegularType ?? parameterType;
+        var parameterType = MappedType(MemberClrType(parameter));
 
         // Map the environment onto Z3-compatible types.
         Expr constrExp;
@@ -1101,10 +1119,7 @@ public class Theorem
         // Normalize types when facing Z3. Theorem variable type mappings allow for strong
         // typing within the theorem, while underlying variable representations are Z3-
         // friendly types.
-        var parameterType = MemberClrType(parameter);
-
-        TheoremVariableTypeMappingAttribute? parameterTypeMapping = GetTypeMapping(parameterType);
-        parameterType = parameterTypeMapping?.RegularType ?? parameterType;
+        var parameterType = MappedType(MemberClrType(parameter));
 
         object value;
         TypeCode typeCode = Type.GetTypeCode(parameterType);
@@ -1147,7 +1162,7 @@ public class Theorem
 
         // If there was a type mapping, we need to convert back to the original type.
         // In that case we expect a constructor with the mapped type to be available.
-        if (parameterTypeMapping != null)
+        if (MappedType(MemberClrType(parameter)) != MemberClrType(parameter))
         {
             if (parameter is PropertyInfo propertyInfo)
             {

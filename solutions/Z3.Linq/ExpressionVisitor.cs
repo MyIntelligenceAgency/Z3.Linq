@@ -123,6 +123,28 @@ internal sealed class ExpressionVisitor
         return finder.Found;
     }
 
+    /// <summary>
+    /// Reports whether an expression converts a value to a type that carries a
+    /// <see cref="TheoremVariableTypeMappingAttribute"/>.
+    /// </summary>
+    /// <param name="expression">The expression to scan.</param>
+    /// <returns><see langword="true"/> when a conversion to a mapped type appears anywhere in the tree.</returns>
+    /// <remarks>
+    /// A cast such as <c>(ExactReal)2.5</c> is an operator call on a constant, so a host evaluation
+    /// folds it into a constant of the mapped type. The visitor then receives a value it refuses,
+    /// while the conversion node itself carries what it needs to select the sort: translated, the
+    /// cast is the identity construction the mapping promises, and an arbitrary instance of the
+    /// mapped type stays unsupported. A constraint that mentions such a conversion is therefore
+    /// translated without the fold. See <c>Theorem.TranslateConstraint</c> and MappedTypeConversionTests.
+    /// </remarks>
+    internal static bool MentionsMappedTypeConversion(Expression expression)
+    {
+        var finder = new MappedTypeConversionFinder();
+        finder.Visit(expression);
+
+        return finder.Found;
+    }
+
     private Expr Visit(Expression expression)
     {
         // Largely table-driven mechanism, providing constructor lambdas to Visit* methods,
@@ -255,9 +277,13 @@ internal sealed class ExpressionVisitor
         // This used to be a switch on the target type alone, which assumed the operand sort from
         // it - int-to-real for every conversion to double, real-to-int for every conversion to
         // int - and had no arm at all for long, float or decimal. See #63 and #76.
-        Sort? targetSort = expression.Type == typeof(char)
+        // The target is asked for the sort its symbols are declared with, so a type carrying a
+        // TheoremVariableTypeMappingAttribute is converted to the sort of the type it stands for.
+        Type targetType = Theorem.MappedType(expression.Type);
+
+        Sort? targetSort = targetType == typeof(char)
             ? this.context.IntSort
-            : Theorem.TryGetSymbolSort(this.context, Type.GetTypeCode(expression.Type));
+            : Theorem.TryGetSymbolSort(this.context, Type.GetTypeCode(targetType));
 
         if (targetSort is not null)
         {
@@ -265,7 +291,17 @@ internal sealed class ExpressionVisitor
             // translating it from the sorts alone would drop whatever the operator does. Decimal's
             // built-in conversions are operator methods on decimal too, and are the numeric
             // conversions translated here; any other operator is refused.
-            if (expression.Method is { } method && method.DeclaringType != typeof(decimal))
+            //
+            // The exception is the identity construction promised by a variable type mapping: the
+            // cast's target carries the mapping, and its operator accepts the regular type and
+            // returns that same target. The sort conversion below stands in for the constructor.
+            // An arbitrary instance of the mapped type is still refused by VisitConstantValue.
+            if (expression.Method is { } method && method.DeclaringType != typeof(decimal)
+                && !(expression.Method.IsSpecialName
+                    && (expression.Method.Name == "op_Implicit" || expression.Method.Name == "op_Explicit")
+                    && expression.Method.ReturnType == expression.Type
+                    && expression.Method.GetParameters() is [{ } parameter]
+                    && parameter.ParameterType == targetType))
             {
                 throw new NotSupportedException(
                     $"The conversion '{expression}' calls the user-defined operator {method.DeclaringType}.{method.Name}, which cannot be translated: only built-in numeric conversions are supported.");
@@ -1420,6 +1456,21 @@ internal sealed class ExpressionVisitor
             this.Found = this.Found || node.Method.DeclaringType == typeof(MiaPlaza.ExpressionUtils.ExceptionClosure);
 
             return this.Found ? node : base.VisitMethodCall(node);
+        }
+    }
+
+    /// <summary>Reports whether a conversion targets a type mapped by a variable type mapping.</summary>
+    private sealed class MappedTypeConversionFinder : ExprVisitor
+    {
+        internal bool Found { get; private set; }
+
+        protected override Expression VisitUnary(UnaryExpression node)
+        {
+            this.Found = this.Found
+                || (node.NodeType is ExpressionType.Convert or ExpressionType.ConvertChecked
+                    && Theorem.MappedType(node.Type) != node.Type);
+
+            return this.Found ? node : base.VisitUnary(node);
         }
     }
 }
